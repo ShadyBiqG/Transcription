@@ -1,32 +1,79 @@
-const tokenInput = document.querySelector("#token");
+const authShell = document.querySelector("#auth-shell");
+const appShell = document.querySelector("#app-shell");
+const authForm = document.querySelector("#auth-form");
+const authMessage = document.querySelector("#auth-message");
+const currentUser = document.querySelector("#current-user");
 const form = document.querySelector("#upload-form");
 const jobsNode = document.querySelector("#jobs");
 const messageNode = document.querySelector("#message");
 const healthNode = document.querySelector("#health");
+let refreshTimer = null;
+let healthTimer = null;
 
-tokenInput.value = localStorage.getItem("transcription-api-token") || "";
-tokenInput.addEventListener("change", () => {
-  localStorage.setItem("transcription-api-token", tokenInput.value.trim());
+function showAuth() {
+  appShell.hidden = true;
+  authShell.hidden = false;
+  currentUser.textContent = "";
+  clearInterval(refreshTimer);
+  clearInterval(healthTimer);
+}
+
+function showApp(user) {
+  authShell.hidden = true;
+  appShell.hidden = false;
+  currentUser.textContent = user.email;
+  clearInterval(refreshTimer);
+  clearInterval(healthTimer);
   refreshJobs();
-});
-
-function headers() {
-  const token = tokenInput.value.trim();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  refreshHealth();
+  refreshTimer = setInterval(refreshJobs, 3000);
+  healthTimer = setInterval(refreshHealth, 15000);
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: { ...headers(), ...(options.headers || {}) },
-  });
+  const response = await fetch(path, options);
   if (!response.ok) {
     let detail = `HTTP ${response.status}`;
-    try { detail = (await response.json()).detail || detail; } catch (_) { /* noop */ }
+    try { detail = (await response.json()).detail || detail; } catch (_) { /* нет JSON */ }
+    if (response.status === 401 && !path.startsWith("/api/v1/auth/")) showAuth();
     throw new Error(detail);
   }
   return response;
 }
+
+async function authenticate(action) {
+  authMessage.textContent = action === "register" ? "Регистрация…" : "Вход…";
+  const body = {
+    email: document.querySelector("#auth-email").value,
+    password: document.querySelector("#auth-password").value,
+  };
+  try {
+    const response = await api(`/api/v1/auth/${action}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const user = await response.json();
+    authForm.reset();
+    authMessage.textContent = "";
+    showApp(user);
+  } catch (error) {
+    authMessage.textContent = error.message;
+  }
+}
+
+authForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  authenticate("login");
+});
+
+document.querySelector("#register").addEventListener("click", () => {
+  if (authForm.reportValidity()) authenticate("register");
+});
+
+document.querySelector("#logout").addEventListener("click", async () => {
+  try { await api("/api/v1/auth/logout", { method: "POST" }); } finally { showAuth(); }
+});
 
 async function refreshHealth() {
   try {
@@ -53,17 +100,24 @@ function renderJob(job) {
   const card = document.createElement("article");
   card.className = "job";
   const downloads = job.status === "completed"
-    ? `<a data-download="${job.transcript_url}" href="#">Скачать VTT</a>`
+    ? `<a data-open="${job.transcript_url}" href="#">Открыть транскрипцию</a>`
+      + `<a data-download="${job.transcript_url}" href="#">Скачать файл</a>`
     : "";
   card.innerHTML = `
     <div><strong>${escapeHtml(job.original_filename)}</strong><span>${formatSize(job.size_bytes)}</span></div>
     <span class="badge ${job.status}">${job.status}</span>
-    <p>${job.error_message ? escapeHtml(job.error_message) : `${job.language} · ${job.model}`}</p>
+    <p>${job.error_message ? escapeHtml(job.error_message) : `${job.language} · ${job.model} · говорящие: ${escapeHtml(job.speaker_detection)}`}</p>
     <footer>${downloads}<a data-download="${job.manifest_url}" href="#">Manifest</a></footer>`;
   card.querySelectorAll("[data-download]").forEach((link) => {
     link.addEventListener("click", async (event) => {
       event.preventDefault();
       await download(link.dataset.download);
+    });
+  });
+  card.querySelectorAll("[data-open]").forEach((link) => {
+    link.addEventListener("click", async (event) => {
+      event.preventDefault();
+      await openTranscript(link.dataset.open);
     });
   });
   return card;
@@ -91,13 +145,29 @@ async function download(path) {
   } catch (error) { messageNode.textContent = error.message; }
 }
 
+async function openTranscript(path) {
+  const preview = window.open("about:blank", "_blank");
+  try {
+    if (!preview) throw new Error("Браузер заблокировал новое окно");
+    preview.opener = null;
+    const response = await api(path);
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    preview.location.href = url;
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (error) {
+    if (preview) preview.close();
+    messageNode.textContent = error.message;
+  }
+}
+
 async function refreshJobs() {
   try {
     const jobs = await (await api("/api/v1/jobs")).json();
     jobsNode.replaceChildren(...jobs.map(renderJob));
     if (!jobs.length) jobsNode.textContent = "Заданий пока нет.";
   } catch (error) {
-    jobsNode.textContent = error.message;
+    if (!appShell.hidden) jobsNode.textContent = error.message;
   }
 }
 
@@ -110,12 +180,20 @@ form.addEventListener("submit", async (event) => {
     messageNode.textContent = `Задание ${job.id} принято.`;
     form.reset();
     document.querySelector("#language").value = "ru";
+    document.querySelector("#speaker_detection").value = "auto";
     await refreshJobs();
   } catch (error) { messageNode.textContent = error.message; }
 });
 
 document.querySelector("#refresh").addEventListener("click", refreshJobs);
-refreshHealth();
-refreshJobs();
-setInterval(refreshJobs, 3000);
-setInterval(refreshHealth, 15000);
+
+async function initialize() {
+  try {
+    const user = await (await api("/api/v1/auth/me")).json();
+    showApp(user);
+  } catch (_) {
+    showAuth();
+  }
+}
+
+initialize();

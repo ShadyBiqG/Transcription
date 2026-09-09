@@ -6,13 +6,13 @@ from pathlib import Path
 
 from .models import JobStatus, TranscriptionJob
 
-MANIFEST_SCHEMA_VERSION = 1
+MANIFEST_SCHEMA_VERSION = 2
 
 
 def build_manifest(job: TranscriptionJob) -> dict[str, object]:
     artifacts = {"source": job.source_filename}
     if job.status is JobStatus.COMPLETED:
-        artifacts["transcript_vtt"] = "transcript.vtt"
+        artifacts["transcript_html"] = "transcript.html"
 
     error: dict[str, str] | None = None
     if job.error_code and job.error_message:
@@ -35,6 +35,7 @@ def build_manifest(job: TranscriptionJob) -> dict[str, object]:
             "engine": "noscribe",
             "language": job.language,
             "model": job.model,
+            "speaker_detection": job.speaker_detection,
             "timestamps": True,
             "exit_code": job.process_exit_code,
         },

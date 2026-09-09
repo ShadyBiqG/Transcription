@@ -46,3 +46,27 @@ def test_list_is_newest_first(tmp_path):
     repository.create(first)
     repository.create(second)
     assert [job.id for job in repository.list()] == [second.id, first.id]
+
+
+def test_initialize_migrates_existing_database_with_speaker_detection(tmp_path):
+    database_path = tmp_path / "jobs.sqlite3"
+    repository = JobRepository(database_path)
+    repository.initialize()
+    repository.create(make_job())
+    with repository._connect() as connection:
+        connection.execute("ALTER TABLE jobs RENAME TO jobs_new")
+        connection.execute(
+            "CREATE TABLE jobs AS SELECT id, original_filename, source_filename, status, "
+            "language, model, media_type, size_bytes, sha256, created_at, updated_at, "
+            "started_at, completed_at, error_code, error_message, process_exit_code FROM jobs_new"
+        )
+        connection.execute("DROP TABLE jobs_new")
+
+    repository.initialize()
+
+    with repository._connect() as connection:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
+    assert "speaker_detection" in columns
+    migrated = repository.get("00000000-0000-0000-0000-000000000001")
+    assert migrated is not None
+    assert migrated.speaker_detection == "none"

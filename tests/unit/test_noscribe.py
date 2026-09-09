@@ -11,22 +11,32 @@ from transcription_service.noscribe import (
 )
 
 
-def test_build_arguments_uses_direct_headless_vtt_contract(settings):
+def test_build_arguments_uses_headless_html_with_speaker_detection(settings):
     runner = NoScribeRunner(settings)
     arguments = runner.build_arguments(
-        Path("meeting.webm"), Path("transcript.vtt"), "ru", "precise"
+        Path("meeting.webm"), Path("transcript.html"), "ru", "precise", "auto"
     )
     assert arguments[0] == str(settings.noscribe_path)
     assert "--no-gui" in arguments
-    assert arguments[arguments.index("--speaker-detection") + 1] == "none"
+    assert arguments[arguments.index("--speaker-detection") + 1] == "auto"
     assert "--timestamps" in arguments
-    assert arguments[-2:] == ["meeting.webm", "transcript.vtt"]
+    assert arguments[-2:] == ["meeting.webm", "transcript.html"]
 
 
 @pytest.mark.parametrize("language", ["ru;del", "", "русский", "r"])
 def test_build_arguments_rejects_invalid_language(settings, language):
     with pytest.raises(ValueError):
-        NoScribeRunner(settings).build_arguments(Path("a.webm"), Path("a.vtt"), language, "precise")
+        NoScribeRunner(settings).build_arguments(
+            Path("a.webm"), Path("a.html"), language, "precise", "auto"
+        )
+
+
+@pytest.mark.parametrize("speaker_detection", ["0", "11", "many", ""])
+def test_build_arguments_rejects_invalid_speaker_detection(settings, speaker_detection):
+    with pytest.raises(ValueError):
+        NoScribeRunner(settings).build_arguments(
+            Path("a.webm"), Path("a.html"), "ru", "precise", speaker_detection
+        )
 
 
 def test_readiness_reports_missing_executable(settings):

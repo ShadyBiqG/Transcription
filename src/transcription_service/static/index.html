@@ -7,11 +7,34 @@
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <main class="shell">
+  <main id="auth-shell" class="shell auth-shell">
+    <header>
+      <p class="eyebrow">noScribe · локальная обработка</p>
+      <h1>Вход</h1>
+      <p class="lede">Введите почту и пароль. При первом посещении зарегистрируйтесь.</p>
+    </header>
+    <section class="panel auth-panel">
+      <form id="auth-form">
+        <label>Электронная почта
+          <input id="auth-email" type="email" autocomplete="email" required maxlength="254">
+        </label>
+        <label>Пароль
+          <input id="auth-password" type="password" autocomplete="current-password" required minlength="8" maxlength="128">
+        </label>
+        <div class="auth-actions">
+          <button type="submit">Войти</button>
+          <button id="register" class="secondary" type="button">Зарегистрироваться</button>
+        </div>
+      </form>
+      <p id="auth-message" role="status"></p>
+    </section>
+  </main>
+
+  <main id="app-shell" class="shell" hidden>
     <header>
       <p class="eyebrow">noScribe · локальная обработка</p>
       <h1>Транскрибация телемостов</h1>
-      <p class="lede">Загрузите WEBM, дождитесь обработки и скачайте VTT с таймкодами.</p>
+      <p class="lede">Загрузите WEBM, дождитесь обработки и откройте HTML с таймкодами и метками говорящих.</p>
     </header>
 
     <section class="panel status-panel">
@@ -19,10 +42,10 @@
         <span class="label">Состояние</span>
         <strong id="health">Проверка…</strong>
       </div>
-      <label class="token-field">
-        <span>API-токен локальной сети</span>
-        <input id="token" type="password" autocomplete="off" placeholder="Не нужен, если защита отключена">
-      </label>
+      <div class="account">
+        <span id="current-user"></span>
+        <button id="logout" class="secondary" type="button">Выйти</button>
+      </div>
     </section>
 
     <section class="panel">
@@ -37,6 +60,22 @@
             <select id="model" name="model">
               <option value="precise">precise</option>
               <option value="fast">fast</option>
+            </select>
+          </label>
+          <label>Говорящие
+            <select id="speaker_detection" name="speaker_detection">
+              <option value="auto">Определить автоматически</option>
+              <option value="none">Не определять</option>
+              <option value="1">Точно 1</option>
+              <option value="2">Точно 2</option>
+              <option value="3">Точно 3</option>
+              <option value="4">Точно 4</option>
+              <option value="5">Точно 5</option>
+              <option value="6">Точно 6</option>
+              <option value="7">Точно 7</option>
+              <option value="8">Точно 8</option>
+              <option value="9">Точно 9</option>
+              <option value="10">Точно 10</option>
             </select>
           </label>
           <button type="submit">Запустить</button>

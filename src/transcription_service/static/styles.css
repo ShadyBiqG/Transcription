@@ -7,7 +7,12 @@ h1 { margin: .35rem 0; font-size: clamp(2.2rem, 7vw, 4.8rem); line-height: .98; 
 .lede { color: #aebbd0; max-width: 620px; font-size: 1.1rem; }
 .panel { margin: 28px 0; padding: 22px; border: 1px solid #29354c; border-radius: 18px; background: rgba(14, 23, 41, .88); box-shadow: 0 20px 60px rgba(0,0,0,.2); }
 .status-panel, .controls, .section-title, .job > div, .job footer { display: flex; align-items: center; gap: 16px; justify-content: space-between; }
-.token-field { width: min(440px, 60%); }
+.account, .auth-actions { display: flex; align-items: center; gap: 12px; }
+.account span { color: #b8c4d7; }
+.auth-shell { width: min(560px, calc(100% - 32px)); }
+.auth-panel form { display: grid; gap: 16px; }
+.auth-actions { margin-top: 4px; }
+.auth-actions button { flex: 1; }
 label { display: grid; gap: 8px; color: #b8c4d7; font-size: .88rem; }
 input, select, button { min-height: 44px; border-radius: 10px; border: 1px solid #36445d; background: #111b2e; color: #edf3ff; padding: 10px 12px; }
 button { border: 0; background: #76d8c4; color: #07130f; font-weight: 800; cursor: pointer; }
@@ -29,4 +34,4 @@ button.secondary { background: #1a2942; color: #dce8fa; }
 .badge.queued { background: #1d3150; color: #9bc8ff; }
 #health[data-ok="true"] { color: #8cf2d9; }
 #health[data-ok="false"] { color: #ff9aad; }
-@media (max-width: 680px) { .status-panel { align-items: stretch; flex-direction: column; } .token-field { width: 100%; } .controls button { margin-left: 0; width: 100%; } }
+@media (max-width: 680px) { .status-panel { align-items: stretch; flex-direction: column; } .account { justify-content: space-between; } .controls button { margin-left: 0; width: 100%; } }

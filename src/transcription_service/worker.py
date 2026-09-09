@@ -62,10 +62,11 @@ class JobWorker:
             try:
                 result = await self.service.runner.run(
                     directory / job.source_filename,
-                    directory / "transcript.vtt",
+                    directory / "transcript.html",
                     directory / "noscribe.log",
                     job.language,
                     job.model,
+                    job.speaker_detection,
                 )
                 if result.success:
                     completed = self.service.repository.mark_completed(

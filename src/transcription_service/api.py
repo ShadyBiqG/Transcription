@@ -1,22 +1,33 @@
-from __future__ import annotations
-
 import asyncio
-import secrets
+import re
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import Cookie, Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from .auth import hash_password, new_session_token, verify_password
 from .config import Settings
 from .database import JobRepository
-from .models import HealthResponse, JobResponse, JobStatus, TranscriptionJob
+from .models import (
+    AuthCredentials,
+    HealthResponse,
+    JobResponse,
+    JobStatus,
+    TranscriptionJob,
+    User,
+    UserResponse,
+)
 from .noscribe import NoScribeRunner
 from .service import JobService, ServiceError
 from .worker import JobWorker
+
+SESSION_COOKIE = "transcription_session"
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def create_app(
@@ -50,21 +61,39 @@ def create_app(
     app.state.settings = settings
     app.state.service = service
     app.state.worker = worker
+    dummy_password_hash = hash_password("invalid-authentication-password")
 
     static_dir = Path(__file__).with_name("static")
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-    async def require_token(authorization: str | None = Header(default=None)) -> None:
-        expected = settings.api_token
-        if expected is None:
-            return
-        scheme, _, provided = (authorization or "").partition(" ")
-        if scheme.lower() != "bearer" or not secrets.compare_digest(provided, expected):
+    async def current_user(
+        session_token: Annotated[str | None, Cookie(alias=SESSION_COOKIE)] = None,
+    ) -> User:
+        user = repository.get_user_by_session(session_token) if session_token else None
+        if user is None:
+            raise HTTPException(status_code=401, detail="Требуется вход в систему")
+        return user
+
+    def normalize_email(email: str) -> str:
+        normalized = email.strip().lower()
+        if not EMAIL_PATTERN.fullmatch(normalized):
             raise HTTPException(
-                status_code=401,
-                headers={"WWW-Authenticate": "Bearer"},
-                detail="Требуется корректный Bearer-токен",
+                status_code=422, detail="Укажите корректный адрес электронной почты"
             )
+        return normalized
+
+    def set_session_cookie(response: Response, user: User) -> None:
+        token = new_session_token()
+        repository.create_session(user.id, token, settings.session_ttl_days)
+        response.set_cookie(
+            SESSION_COOKIE,
+            token,
+            max_age=settings.session_ttl_days * 24 * 60 * 60,
+            httponly=True,
+            secure=settings.cookie_secure,
+            samesite="lax",
+            path="/",
+        )
 
     @app.exception_handler(ServiceError)
     async def service_error_handler(_, exc: ServiceError) -> JSONResponse:
@@ -83,42 +112,102 @@ def create_app(
             worker="running" if worker.running else "stopped",
         )
 
-    protected = [Depends(require_token)]
+    @app.post("/api/v1/auth/register", response_model=UserResponse, status_code=201)
+    async def register(credentials: AuthCredentials, response: Response) -> UserResponse:
+        email = normalize_email(credentials.email)
+        if repository.get_user_by_email(email) is not None:
+            raise HTTPException(
+                status_code=409, detail="Пользователь с такой почтой уже существует"
+            )
+        try:
+            user = repository.create_user(email, hash_password(credentials.password))
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(
+                status_code=409, detail="Пользователь с такой почтой уже существует"
+            ) from exc
+        set_session_cookie(response, user)
+        return _user_response(user)
+
+    @app.post("/api/v1/auth/login", response_model=UserResponse)
+    async def login(credentials: AuthCredentials, response: Response) -> UserResponse:
+        email = normalize_email(credentials.email)
+        user = repository.get_user_by_email(email)
+        password_hash = user.password_hash if user else dummy_password_hash
+        password_valid = verify_password(credentials.password, password_hash)
+        if user is None or not user.is_active or not password_valid:
+            raise HTTPException(status_code=401, detail="Неверная почта или пароль")
+        set_session_cookie(response, user)
+        return _user_response(user)
+
+    @app.post("/api/v1/auth/logout", status_code=204)
+    async def logout(
+        session_token: Annotated[str | None, Cookie(alias=SESSION_COOKIE)] = None,
+    ) -> Response:
+        if session_token:
+            repository.delete_session(session_token)
+        response = Response(status_code=204)
+        response.delete_cookie(SESSION_COOKIE, path="/")
+        return response
+
+    @app.get("/api/v1/auth/me", response_model=UserResponse)
+    async def me(user: Annotated[User, Depends(current_user)]) -> UserResponse:
+        return _user_response(user)
 
     @app.post(
         "/api/v1/jobs",
         response_model=JobResponse,
         status_code=202,
-        dependencies=protected,
     )
     async def create_job(
         file: Annotated[UploadFile, File()],
+        user: Annotated[User, Depends(current_user)],
         language: Annotated[str, Form()] = settings.default_language,
         model: Annotated[str, Form()] = settings.default_model,
+        speaker_detection: Annotated[
+            str, Form(pattern=r"^(?:none|auto|[1-9]|10)$")
+        ] = "auto",
     ) -> JobResponse:
-        job = await service.create_job(file, language, model)
+        job = await service.create_job(file, language, model, speaker_detection, user.id)
         worker.notify()
         return _job_response(job)
 
-    @app.get("/api/v1/jobs", response_model=list[JobResponse], dependencies=protected)
-    async def list_jobs(limit: int = Query(default=50, ge=1, le=100)) -> list[JobResponse]:
-        return [_job_response(job) for job in service.list_jobs(limit)]
+    @app.get("/api/v1/jobs", response_model=list[JobResponse])
+    async def list_jobs(
+        user: Annotated[User, Depends(current_user)],
+        limit: int = Query(default=50, ge=1, le=100),
+    ) -> list[JobResponse]:
+        return [_job_response(job) for job in service.list_jobs(limit, user.id)]
 
-    @app.get("/api/v1/jobs/{job_id}", response_model=JobResponse, dependencies=protected)
-    async def get_job(job_id: str) -> JobResponse:
-        return _job_response(service.get_job(job_id))
+    @app.get("/api/v1/jobs/{job_id}", response_model=JobResponse)
+    async def get_job(
+        job_id: str, user: Annotated[User, Depends(current_user)]
+    ) -> JobResponse:
+        return _job_response(service.get_job(job_id, user.id))
 
-    @app.get("/api/v1/jobs/{job_id}/transcript", dependencies=protected)
-    async def download_transcript(job_id: str) -> FileResponse:
-        job = service.get_job(job_id)
-        path = service.transcript_path(job_id)
+    @app.get("/api/v1/jobs/{job_id}/transcript")
+    async def download_transcript(
+        job_id: str, user: Annotated[User, Depends(current_user)]
+    ) -> FileResponse:
+        job = service.get_job(job_id, user.id)
+        path = service.transcript_path(job_id, user.id)
         safe_stem = Path(job.original_filename).stem[:100] or "transcript"
-        return FileResponse(path, media_type="text/vtt", filename=f"{safe_stem}.vtt")
-
-    @app.get("/api/v1/jobs/{job_id}/manifest", dependencies=protected)
-    async def download_manifest(job_id: str) -> FileResponse:
+        media_type = "text/html" if path.suffix.lower() == ".html" else "text/vtt"
         return FileResponse(
-            service.manifest_path(job_id),
+            path,
+            media_type=media_type,
+            filename=f"{safe_stem}{path.suffix.lower()}",
+            content_disposition_type="inline",
+            headers={
+                "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"
+            },
+        )
+
+    @app.get("/api/v1/jobs/{job_id}/manifest")
+    async def download_manifest(
+        job_id: str, user: Annotated[User, Depends(current_user)]
+    ) -> FileResponse:
+        return FileResponse(
+            service.manifest_path(job_id, user.id),
             media_type="application/json",
             filename=f"{job_id}-manifest.json",
         )
@@ -134,6 +223,7 @@ def _job_response(job: TranscriptionJob) -> JobResponse:
         status=job.status,
         language=job.language,
         model=job.model,
+        speaker_detection=job.speaker_detection,
         size_bytes=job.size_bytes,
         created_at=job.created_at,
         updated_at=job.updated_at,
@@ -144,6 +234,10 @@ def _job_response(job: TranscriptionJob) -> JobResponse:
         transcript_url=f"{base}/transcript" if job.status is JobStatus.COMPLETED else None,
         manifest_url=f"{base}/manifest",
     )
+
+
+def _user_response(user: User) -> UserResponse:
+    return UserResponse(id=user.id, email=user.email, created_at=user.created_at)
 
 
 app = create_app()

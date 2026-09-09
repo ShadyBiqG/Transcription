@@ -61,13 +61,26 @@ class JobService:
         self.readiness = self.runner.check_readiness()
         return self.readiness
 
-    async def create_job(self, upload: UploadFile, language: str, model: str) -> TranscriptionJob:
+    async def create_job(
+        self,
+        upload: UploadFile,
+        language: str,
+        model: str,
+        speaker_detection: str,
+        user_id: str,
+    ) -> TranscriptionJob:
         if not self.readiness.ready:
             raise NoScribeUnavailable(self.readiness.message or "noScribe недоступен")
         if model not in self.readiness.models:
             raise InvalidUpload(f"Модель {model!r} недоступна")
         language = language.strip().lower()
-        self.runner.build_arguments(Path("source.webm"), Path("transcript.vtt"), language, model)
+        self.runner.build_arguments(
+            Path("source.webm"),
+            Path("transcript.html"),
+            language,
+            model,
+            speaker_detection,
+        )
 
         original_filename = Path(upload.filename or "").name
         if not original_filename or Path(original_filename).suffix.lower() != ".webm":
@@ -98,10 +111,12 @@ class JobService:
             now = utc_now()
             job = TranscriptionJob(
                 id=job_id,
+                user_id=user_id,
                 original_filename=original_filename,
                 status=JobStatus.QUEUED,
                 language=language,
                 model=model,
+                speaker_detection=speaker_detection,
                 media_type=upload.content_type or "video/webm",
                 size_bytes=size,
                 sha256=digest.hexdigest(),
@@ -119,16 +134,16 @@ class JobService:
             shutil.rmtree(temp_job_dir, ignore_errors=True)
             await upload.close()
 
-    def get_job(self, job_id: str) -> TranscriptionJob:
+    def get_job(self, job_id: str, user_id: str | None = None) -> TranscriptionJob:
         if not re.fullmatch(r"[0-9a-fA-F-]{36}", job_id):
             raise JobNotFound("Задание не найдено")
-        job = self.repository.get(job_id)
+        job = self.repository.get(job_id, user_id)
         if job is None:
             raise JobNotFound("Задание не найдено")
         return job
 
-    def list_jobs(self, limit: int) -> list[TranscriptionJob]:
-        return self.repository.list(limit)
+    def list_jobs(self, limit: int, user_id: str | None = None) -> list[TranscriptionJob]:
+        return self.repository.list(limit, user_id)
 
     def job_dir(self, job_id: str) -> Path:
         job = self.get_job(job_id)
@@ -137,17 +152,20 @@ class JobService:
             raise JobNotFound("Задание не найдено")
         return resolved
 
-    def transcript_path(self, job_id: str) -> Path:
-        job = self.get_job(job_id)
+    def transcript_path(self, job_id: str, user_id: str | None = None) -> Path:
+        job = self.get_job(job_id, user_id)
         if job.status is not JobStatus.COMPLETED:
             raise ArtifactNotReady("Транскрипция еще не готова")
-        path = self.job_dir(job_id) / "transcript.vtt"
-        if not path.is_file() or path.stat().st_size == 0:
-            raise JobNotFound("Файл транскрипции не найден")
-        return path
+        directory = self.job_dir(job_id)
+        for filename in ("transcript.html", "transcript.vtt"):
+            path = directory / filename
+            if path.is_file() and path.stat().st_size > 0:
+                return path
+        raise JobNotFound("Файл транскрипции не найден")
 
-    def manifest_path(self, job_id: str) -> Path:
-        path = self.job_dir(job_id) / "manifest.json"
+    def manifest_path(self, job_id: str, user_id: str | None = None) -> Path:
+        job = self.get_job(job_id, user_id)
+        path = self.settings.jobs_dir / job.id / "manifest.json"
         if not path.is_file():
             raise JobNotFound("Manifest не найден")
         return path

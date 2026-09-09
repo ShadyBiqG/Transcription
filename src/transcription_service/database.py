@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import UTC, datetime
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from .models import JobStatus, TranscriptionJob
+from .auth import hash_session_token
+from .models import JobStatus, TranscriptionJob, User
 
 
 def utc_now() -> datetime:
@@ -19,12 +23,20 @@ class JobRepository:
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.database_path, timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA foreign_keys=ON")
-        return connection
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def initialize(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -33,11 +45,13 @@ class JobRepository:
                 """
                 CREATE TABLE IF NOT EXISTS jobs (
                     id TEXT PRIMARY KEY,
+                    user_id TEXT,
                     original_filename TEXT NOT NULL,
                     source_filename TEXT NOT NULL,
                     status TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed')),
                     language TEXT NOT NULL,
                     model TEXT NOT NULL,
+                    speaker_detection TEXT NOT NULL DEFAULT 'auto',
                     media_type TEXT NOT NULL,
                     size_bytes INTEGER NOT NULL CHECK(size_bytes > 0),
                     sha256 TEXT NOT NULL,
@@ -51,6 +65,43 @@ class JobRepository:
                 )
                 """
             )
+            columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(jobs)").fetchall()
+            }
+            if "speaker_detection" not in columns:
+                connection.execute(
+                    "ALTER TABLE jobs ADD COLUMN speaker_detection TEXT NOT NULL DEFAULT 'none'"
+                )
+            if "user_id" not in columns:
+                connection.execute("ALTER TABLE jobs ADD COLUMN user_id TEXT")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
+                    email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    password_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    is_active INTEGER NOT NULL DEFAULT 1
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sessions (
+                    token_hash TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_jobs_user_created "
+                "ON jobs(user_id, created_at DESC)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)"
+            )
 
     def create(self, job: TranscriptionJob) -> None:
         values = job.model_dump(mode="json")
@@ -63,17 +114,84 @@ class JobRepository:
                 values,
             )
 
-    def get(self, job_id: str) -> TranscriptionJob | None:
+    def get(self, job_id: str, user_id: str | None = None) -> TranscriptionJob | None:
         with self._connect() as connection:
-            row = connection.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            if user_id is None:
+                row = connection.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT * FROM jobs WHERE id = ? AND user_id = ?", (job_id, user_id)
+                ).fetchone()
         return self._to_job(row) if row else None
 
-    def list(self, limit: int = 50) -> list[TranscriptionJob]:
+    def list(self, limit: int = 50, user_id: str | None = None) -> list[TranscriptionJob]:
         with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
-            ).fetchall()
+            if user_id is None:
+                rows = connection.execute(
+                    "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+                    (user_id, limit),
+                ).fetchall()
         return [self._to_job(row) for row in rows]
+
+    def create_user(self, email: str, password_hash: str) -> User:
+        user = User(
+            id=str(uuid.uuid4()),
+            email=email,
+            password_hash=password_hash,
+            created_at=utc_now(),
+        )
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO users (id, email, password_hash, created_at, is_active) "
+                "VALUES (?, ?, ?, ?, 1)",
+                (user.id, user.email, user.password_hash, user.created_at.isoformat()),
+            )
+        return user
+
+    def get_user_by_email(self, email: str) -> User | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM users WHERE email = ? COLLATE NOCASE", (email,)
+            ).fetchone()
+        return self._to_user(row) if row else None
+
+    def create_session(self, user_id: str, token: str, ttl_days: int) -> None:
+        now = utc_now()
+        with self._connect() as connection:
+            connection.execute("DELETE FROM sessions WHERE expires_at <= ?", (now.isoformat(),))
+            connection.execute(
+                "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    hash_session_token(token),
+                    user_id,
+                    now.isoformat(),
+                    (now + timedelta(days=ttl_days)).isoformat(),
+                ),
+            )
+
+    def get_user_by_session(self, token: str) -> User | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT users.* FROM sessions
+                JOIN users ON users.id = sessions.user_id
+                WHERE sessions.token_hash = ? AND sessions.expires_at > ?
+                  AND users.is_active = 1
+                """,
+                (hash_session_token(token), utc_now().isoformat()),
+            ).fetchone()
+        return self._to_user(row) if row else None
+
+    def delete_session(self, token: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM sessions WHERE token_hash = ?", (hash_session_token(token),)
+            )
 
     def claim_next(self) -> TranscriptionJob | None:
         now = utc_now().isoformat()
@@ -152,3 +270,9 @@ class JobRepository:
     @staticmethod
     def _to_job(row: sqlite3.Row) -> TranscriptionJob:
         return TranscriptionJob.model_validate(dict(row))
+
+    @staticmethod
+    def _to_user(row: sqlite3.Row) -> User:
+        values = dict(row)
+        values["is_active"] = bool(values["is_active"])
+        return User.model_validate(values)

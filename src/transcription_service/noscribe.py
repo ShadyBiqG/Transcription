@@ -34,12 +34,19 @@ class NoScribeRunner:
         self.settings = settings
 
     def build_arguments(
-        self, input_path: Path, output_path: Path, language: str, model: str
+        self,
+        input_path: Path,
+        output_path: Path,
+        language: str,
+        model: str,
+        speaker_detection: str,
     ) -> list[str]:
         if model not in self.settings.allowed_models:
             raise ValueError(f"Модель {model!r} не разрешена")
         if not LANGUAGE_PATTERN.fullmatch(language):
             raise ValueError("Код языка должен состоять из 2–8 латинских букв или быть auto")
+        if not re.fullmatch(r"(?:none|auto|[1-9]|10)", speaker_detection):
+            raise ValueError("Число говорящих должно быть auto, none или от 1 до 10")
         return [
             str(self.settings.noscribe_path),
             "--no-gui",
@@ -48,7 +55,7 @@ class NoScribeRunner:
             "--model",
             model,
             "--speaker-detection",
-            "none",
+            speaker_detection,
             "--timestamps",
             str(input_path),
             str(output_path),
@@ -87,8 +94,11 @@ class NoScribeRunner:
         log_path: Path,
         language: str,
         model: str,
+        speaker_detection: str,
     ) -> NoScribeResult:
-        arguments = self.build_arguments(input_path, output_path, language, model)
+        arguments = self.build_arguments(
+            input_path, output_path, language, model, speaker_detection
+        )
         process: asyncio.subprocess.Process | None = None
         try:
             if os.name == "nt":

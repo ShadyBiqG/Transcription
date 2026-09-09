@@ -18,13 +18,16 @@ class Settings:
     allowed_models: tuple[str, ...]
     max_upload_bytes: int
     noscribe_timeout_seconds: int
-    api_token: str | None
+    session_ttl_days: int = 30
+    cookie_secure: bool = False
 
     def __post_init__(self) -> None:
         if self.max_upload_bytes <= 0:
             raise ValueError("Лимит загрузки должен быть больше нуля")
         if self.noscribe_timeout_seconds <= 0:
             raise ValueError("Таймаут noScribe должен быть больше нуля")
+        if self.session_ttl_days <= 0:
+            raise ValueError("Срок действия сессии должен быть больше нуля")
         if self.default_model not in self.allowed_models:
             raise ValueError("Модель по умолчанию отсутствует в списке разрешенных")
         if not self.default_language:
@@ -50,7 +53,6 @@ class Settings:
             for value in os.getenv("TRANSCRIPTION_ALLOWED_MODELS", "fast,precise").split(",")
             if value.strip()
         )
-        token = os.getenv("TRANSCRIPTION_API_TOKEN", "").strip() or None
         return cls(
             data_dir=Path(os.getenv("TRANSCRIPTION_DATA_DIR", "./data")).resolve(),
             noscribe_path=Path(
@@ -65,5 +67,7 @@ class Settings:
             noscribe_timeout_seconds=int(
                 os.getenv("TRANSCRIPTION_NOSCRIBE_TIMEOUT_SECONDS", str(6 * 60 * 60))
             ),
-            api_token=token,
+            session_ttl_days=int(os.getenv("TRANSCRIPTION_SESSION_TTL_DAYS", "30")),
+            cookie_secure=os.getenv("TRANSCRIPTION_COOKIE_SECURE", "false").strip().lower()
+            in {"1", "true", "yes", "on"},
         )

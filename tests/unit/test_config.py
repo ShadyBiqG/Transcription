@@ -15,7 +15,6 @@ def test_default_model_must_be_allowed(tmp_path):
             allowed_models=("fast", "precise"),
             max_upload_bytes=10,
             noscribe_timeout_seconds=10,
-            api_token=None,
         )
 
 

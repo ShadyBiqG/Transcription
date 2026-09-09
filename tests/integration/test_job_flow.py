@@ -4,6 +4,7 @@ import time
 
 from fastapi.testclient import TestClient
 
+from tests.conftest import register_user
 from transcription_service.api import create_app
 
 
@@ -20,6 +21,7 @@ def wait_for_terminal(client: TestClient, job_id: str) -> dict:
 
 def test_worker_completes_job_and_list_exposes_it(settings, fake_runner):
     with TestClient(create_app(settings, fake_runner)) as client:
+        register_user(client)
         created = client.post(
             "/api/v1/jobs",
             files={"file": ("meeting.webm", b"video", "video/webm")},
@@ -35,6 +37,7 @@ def test_worker_records_safe_failure(settings):
     from tests.conftest import FakeNoScribeRunner
 
     with TestClient(create_app(settings, FakeNoScribeRunner(fail=True))) as client:
+        register_user(client)
         created = client.post(
             "/api/v1/jobs",
             files={"file": ("meeting.webm", b"video", "video/webm")},
