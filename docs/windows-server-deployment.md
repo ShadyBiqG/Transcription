@@ -31,7 +31,7 @@ HTTP не шифрует запись. Bearer-токен ограничивае�
 - Windows 10/11 или Windows Server x64.
 - Локальный NTFS-каталог для приложения и данных; не используйте подключенный пользователем сетевой диск — службы обычно не видят такие буквы дисков.
 - Python 3.12+ и `uv`.
-- noScribe 0.7.2 с установленными моделями.
+- [noScribe](https://noscribe.de/en/) 0.7.2 с установленными моделями.
 - Отдельная либо существующая Windows-учетная запись, под которой noScribe уже запускалась вручную.
 - Права администратора для регистрации службы и правила брандмауэра.
 
@@ -61,12 +61,31 @@ noScribe должна быть установлена именно на серв
 
 ## 4. Установка приложения
 
-Скопируйте проект в постоянный каталог. Далее команды предполагают `C:\Services\Transcription`.
+Клонируйте **весь репозиторий** в постоянный каталог. Нельзя копировать только `src`: команда `uv sync` также требует корневые файлы `pyproject.toml` и `uv.lock`.
+
+Если каталог `C:\Services\Transcription` еще не существует, выполните:
+
+```powershell
+Set-Location 'C:\Services'
+git clone 'https://github.com/ShadyBiqG/Transcription.git' 'Transcription'
+```
+
+Если Git на сервере не установлен, скачайте ZIP репозитория и распакуйте **его содержимое** в `C:\Services\Transcription`. После копирования структура должна начинаться так:
+
+```text
+C:\Services\Transcription\pyproject.toml
+C:\Services\Transcription\uv.lock
+C:\Services\Transcription\src\
+C:\Services\Transcription\deploy\
+```
 
 Откройте обычный PowerShell под учетной записью службы:
 
 ```powershell
 Set-Location 'C:\Services\Transcription'
+if (-not (Test-Path '.\pyproject.toml')) {
+    throw 'Проект скопирован не полностью: отсутствует C:\Services\Transcription\pyproject.toml'
+}
 uv sync --frozen --no-dev
 Copy-Item '.env.example' '.env'
 New-Item -ItemType Directory -Path 'D:\TranscriptionData' -Force
@@ -285,6 +304,21 @@ Remove-NetFirewallRule -DisplayName 'Local Transcription Service TCP 8000'
 ```
 
 ## 11. Типовые проблемы
+
+### `No pyproject.toml found in current directory or any parent directory`
+
+Команда запущена не из корня приложения либо на сервер скопирована только часть репозитория. Проверьте:
+
+```powershell
+Set-Location 'C:\Services\Transcription'
+Get-Item '.\pyproject.toml', '.\uv.lock'
+```
+
+Если файлов нет, повторно выполните шаг 4 и склонируйте или распакуйте весь репозиторий. Не создавайте пустой `pyproject.toml` вручную: серверу нужен файл из этого проекта. После появления обоих файлов повторите:
+
+```powershell
+uv sync --frozen --no-dev
+```
 
 ### `noscribe: unavailable`
 
