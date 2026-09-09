@@ -96,6 +96,20 @@ function formatSize(bytes) {
   return `${value.toFixed(index ? 1 : 0)} ${units[index]}`;
 }
 
+function formatDateTime(value, fallback = "—") {
+  if (!value) return fallback;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return fallback;
+  return new Intl.DateTimeFormat("ru-RU", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(date);
+}
+
 function renderJob(job) {
   const card = document.createElement("article");
   card.className = "job";
@@ -103,10 +117,16 @@ function renderJob(job) {
     ? `<a data-open="${job.transcript_url}" href="#">Открыть транскрипцию</a>`
       + `<a data-download="${job.transcript_url}" href="#">Скачать файл</a>`
     : "";
+  const completedFallback = job.status === "running" ? "выполняется" : "—";
   card.innerHTML = `
     <div><strong>${escapeHtml(job.original_filename)}</strong><span>${formatSize(job.size_bytes)}</span></div>
     <span class="badge ${job.status}">${job.status}</span>
     <p>${job.error_message ? escapeHtml(job.error_message) : `${job.language} · ${job.model} · говорящие: ${escapeHtml(job.speaker_detection)}`}</p>
+    <div class="job-times">
+      <span><b>Создано:</b> ${formatDateTime(job.created_at)}</span>
+      <span><b>Начало:</b> ${formatDateTime(job.started_at, "ожидает запуска")}</span>
+      <span><b>Окончание:</b> ${formatDateTime(job.completed_at, completedFallback)}</span>
+    </div>
     <footer>${downloads}<a data-download="${job.manifest_url}" href="#">Manifest</a></footer>`;
   card.querySelectorAll("[data-download]").forEach((link) => {
     link.addEventListener("click", async (event) => {

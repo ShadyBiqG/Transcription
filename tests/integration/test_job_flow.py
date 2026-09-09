@@ -29,6 +29,8 @@ def test_worker_completes_job_and_list_exposes_it(settings, fake_runner):
         terminal = wait_for_terminal(client, created["id"])
         listed = client.get("/api/v1/jobs").json()
     assert terminal["status"] == "completed"
+    assert terminal["started_at"] is not None
+    assert terminal["completed_at"] is not None
     assert terminal["transcript_url"].endswith("/transcript")
     assert listed[0]["id"] == created["id"]
 

@@ -25,6 +25,8 @@ button.secondary { background: #1a2942; color: #dce8fa; }
 .job { padding: 18px; border-radius: 14px; border: 1px solid #29354c; background: #0f182a; display: grid; grid-template-columns: 1fr auto; gap: 8px 20px; }
 .job span, .job p { color: #99a9c0; }
 .job p, .job footer { grid-column: 1 / -1; margin: 0; }
+.job .job-times { grid-column: 1 / -1; display: flex; justify-content: flex-start; flex-wrap: wrap; gap: 8px 24px; font-size: .82rem; }
+.job-times b { color: #c7d3e5; }
 .job footer { justify-content: flex-start; }
 .job a { color: #76d8c4; }
 .badge { padding: 5px 10px; border-radius: 999px; font-size: .75rem; font-weight: 800; }

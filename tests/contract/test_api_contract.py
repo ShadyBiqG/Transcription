@@ -31,6 +31,9 @@ def test_upload_contract_returns_accepted_job(settings, fake_runner):
     assert body["original_filename"] == "встреча.webm"
     assert body["status"] == "queued"
     assert body["speaker_detection"] == "2"
+    assert body["created_at"] is not None
+    assert body["started_at"] is None
+    assert body["completed_at"] is None
     assert body["transcript_url"] is None
     assert body["manifest_url"].endswith("/manifest")
 
