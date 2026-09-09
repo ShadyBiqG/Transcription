@@ -7,6 +7,10 @@
   <arguments>-m transcription_service --host 0.0.0.0 --port 8000</arguments>
   <workingdirectory>%BASE%\..\..</workingdirectory>
 
+  <!-- Кодировка основного Python-процесса; noScribe получает UTF-8 через ConPTY. -->
+  <env name="PYTHONUTF8" value="1" />
+  <env name="PYTHONIOENCODING" value="utf-8" />
+
   <startmode>Automatic</startmode>
   <delayedAutoStart />
   <stoptimeout>30 sec</stoptimeout>

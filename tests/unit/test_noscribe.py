@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from transcription_service.noscribe import NoScribeRunner
+from transcription_service.noscribe import (
+    NoScribeRunner,
+    _drain_windows_pty,
+    _noscribe_environment,
+)
 
 
 def test_build_arguments_uses_direct_headless_vtt_contract(settings):
@@ -30,3 +34,35 @@ def test_readiness_reports_missing_executable(settings):
     readiness = NoScribeRunner(settings).check_readiness()
     assert readiness.ready is False
     assert readiness.models == ()
+
+
+def test_noscribe_environment_forces_utf8(monkeypatch):
+    monkeypatch.setenv("PYTHONUTF8", "0")
+    monkeypatch.setenv("PYTHONIOENCODING", "cp1252")
+
+    environment = _noscribe_environment()
+
+    assert environment["PYTHONUTF8"] == "1"
+    assert environment["PYTHONIOENCODING"] == "utf-8"
+
+
+def test_windows_pty_log_is_written_as_utf8(tmp_path):
+    class FakePtyProcess:
+        def __init__(self):
+            self.outputs = iter(["\x1b[1tРаспознанный текст\r\n"])
+
+        def read(self, _size):
+            try:
+                return next(self.outputs)
+            except StopIteration as error:
+                raise EOFError from error
+
+        def wait(self):
+            return 0
+
+    log_path = tmp_path / "noscribe.log"
+
+    exit_code = _drain_windows_pty(FakePtyProcess(), log_path)
+
+    assert exit_code == 0
+    assert log_path.read_text(encoding="utf-8") == "Распознанный текст\n"

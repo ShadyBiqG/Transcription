@@ -6,10 +6,12 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .config import Settings
 
 LANGUAGE_PATTERN = re.compile(r"^(?:auto|[a-zA-Z]{2,8})$")
+ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +65,7 @@ class NoScribeRunner:
                 timeout=30,
                 check=False,
                 shell=False,
+                env=_noscribe_environment(),
                 creationflags=_creation_flags(),
             )
         except (OSError, subprocess.TimeoutExpired):
@@ -88,29 +91,42 @@ class NoScribeRunner:
         arguments = self.build_arguments(input_path, output_path, language, model)
         process: asyncio.subprocess.Process | None = None
         try:
-            with log_path.open("wb") as log_file:
-                process = await asyncio.create_subprocess_exec(
-                    *arguments,
-                    stdout=log_file,
-                    stderr=asyncio.subprocess.STDOUT,
-                    creationflags=_creation_flags(),
-                )
+            if os.name == "nt":
                 try:
-                    exit_code = await asyncio.wait_for(
-                        process.wait(), timeout=self.settings.noscribe_timeout_seconds
+                    exit_code = await _run_windows_pty(
+                        arguments,
+                        log_path,
+                        self.settings.noscribe_timeout_seconds,
                     )
                 except TimeoutError:
-                    process.kill()
-                    await process.wait()
                     return NoScribeResult(
                         None, False, "noscribe_timeout", "noScribe превысил допустимое время"
+                    )
+            else:
+                with log_path.open("wb") as log_file:
+                    process = await asyncio.create_subprocess_exec(
+                        *arguments,
+                        stdout=log_file,
+                        stderr=asyncio.subprocess.STDOUT,
+                        env=_noscribe_environment(),
+                        creationflags=_creation_flags(),
+                    )
+                    exit_code = await asyncio.wait_for(
+                        process.wait(), timeout=self.settings.noscribe_timeout_seconds
                     )
         except asyncio.CancelledError:
             if process and process.returncode is None:
                 process.kill()
                 await process.wait()
             raise
-        except OSError:
+        except TimeoutError:
+            if process and process.returncode is None:
+                process.kill()
+                await process.wait()
+            return NoScribeResult(
+                None, False, "noscribe_timeout", "noScribe превысил допустимое время"
+            )
+        except (OSError, RuntimeError):
             return NoScribeResult(
                 None, False, "noscribe_start_failed", "Не удалось запустить noScribe"
             )
@@ -134,3 +150,59 @@ class NoScribeRunner:
 
 def _creation_flags() -> int:
     return subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
+
+def _noscribe_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    # Windows-служба не наследует UTF-8 консоль пользователя. Без этих значений
+    # noScribe может выбрать cp1252 и упасть при выводе распознанной кириллицы.
+    environment["PYTHONUTF8"] = "1"
+    environment["PYTHONIOENCODING"] = "utf-8"
+    return environment
+
+
+async def _run_windows_pty(
+    arguments: list[str], log_path: Path, timeout_seconds: int
+) -> int:
+    """Run frozen noScribe in a pseudo-console so Cyrillic stdout is UTF-8.
+
+    PyInstaller ignores Python's encoding environment variables. When stdout is
+    redirected directly to a file, noScribe 0.7.2 therefore selects the Windows
+    ANSI code page and crashes while printing recognized Cyrillic text.
+    """
+    from winpty import PtyProcess
+
+    process = PtyProcess.spawn(arguments, env=_noscribe_environment())
+    drain_task = asyncio.create_task(
+        asyncio.to_thread(_drain_windows_pty, process, log_path),
+        name="noscribe-windows-pty",
+    )
+    try:
+        done, _ = await asyncio.wait({drain_task}, timeout=timeout_seconds)
+        if drain_task not in done:
+            process.terminate(force=True)
+            try:
+                await asyncio.wait_for(asyncio.shield(drain_task), timeout=10)
+            except (TimeoutError, EOFError):
+                pass
+            raise TimeoutError
+        return drain_task.result()
+    except asyncio.CancelledError:
+        if process.isalive():
+            process.terminate(force=True)
+        raise
+    finally:
+        process.close(force=True)
+
+
+def _drain_windows_pty(process: Any, log_path: Path) -> int:
+    with log_path.open("w", encoding="utf-8", newline="") as log_file:
+        while True:
+            try:
+                output = process.read(4096)
+            except EOFError:
+                break
+            if output:
+                log_file.write(ANSI_ESCAPE_PATTERN.sub("", output))
+                log_file.flush()
+    return int(process.wait())
