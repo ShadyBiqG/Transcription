@@ -1,0 +1,24 @@
+<service>
+  <id>LocalTranscriptionService</id>
+  <name>Local Transcription Service</name>
+  <description>Локальный сетевой сервис транскрибации записей через noScribe.</description>
+
+  <executable>%BASE%\..\..\.venv\Scripts\python.exe</executable>
+  <arguments>-m transcription_service --host 0.0.0.0 --port 8000</arguments>
+  <workingdirectory>%BASE%\..\..</workingdirectory>
+
+  <startmode>Automatic</startmode>
+  <delayedAutoStart />
+  <stoptimeout>30 sec</stoptimeout>
+  <stopparentprocessfirst>true</stopparentprocessfirst>
+
+  <logpath>%BASE%\logs</logpath>
+  <log mode="roll-by-size">
+    <!-- WinSW задает порог в КБ: 10240 КБ = 10 МБ. -->
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>5</keepFiles>
+  </log>
+
+  <onfailure action="restart" delay="10 sec" />
+  <resetfailure>1 hour</resetfailure>
+</service>

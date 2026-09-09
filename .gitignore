@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+dist/
+build/
+.env
+.env.*
+!.env.example
+data/
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# AI agents and generated planning artifacts
+.agents/
+.specify/
+specs/
+AGENTS.md
+CLAUDE.md
+.claude/

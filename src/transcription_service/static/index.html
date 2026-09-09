@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Локальная транскрибация</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <p class="eyebrow">noScribe · локальная обработка</p>
+      <h1>Транскрибация телемостов</h1>
+      <p class="lede">Загрузите WEBM, дождитесь обработки и скачайте VTT с таймкодами.</p>
+    </header>
+
+    <section class="panel status-panel">
+      <div>
+        <span class="label">Состояние</span>
+        <strong id="health">Проверка…</strong>
+      </div>
+      <label class="token-field">
+        <span>API-токен локальной сети</span>
+        <input id="token" type="password" autocomplete="off" placeholder="Не нужен, если защита отключена">
+      </label>
+    </section>
+
+    <section class="panel">
+      <form id="upload-form">
+        <label class="file-drop" for="file">
+          <span>Запись встречи в формате .webm</span>
+          <input id="file" name="file" type="file" accept=".webm,video/webm" required>
+        </label>
+        <div class="controls">
+          <label>Язык <input id="language" name="language" value="ru" pattern="[A-Za-z]{2,8}|auto"></label>
+          <label>Модель
+            <select id="model" name="model">
+              <option value="precise">precise</option>
+              <option value="fast">fast</option>
+            </select>
+          </label>
+          <button type="submit">Запустить</button>
+        </div>
+      </form>
+      <p id="message" role="status"></p>
+    </section>
+
+    <section>
+      <div class="section-title">
+        <h2>Задания</h2>
+        <button id="refresh" class="secondary" type="button">Обновить</button>
+      </div>
+      <div id="jobs" class="jobs"></div>
+    </section>
+  </main>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
