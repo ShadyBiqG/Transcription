@@ -39,10 +39,10 @@ HTTP не шифрует запись. Bearer-токен ограничивае�
 
 ```text
 C:\Services\Transcription       приложение
-D:\TranscriptionData            записи, SQLite, VTT и журналы заданий
+E:\TranscriptionData            записи, SQLite, VTT и журналы заданий
 ```
 
-Если диска `D:` нет, используйте `C:\TranscriptionData`.
+В этой инструкции каталог данных расположен на доступном на сервере диске `E:`.
 
 noScribe должна быть установлена именно на сервере, где работает служба. Ее наличие только на компьютере пользователя недостаточно: после загрузки сервер запускает собственный локальный `noScribe.exe`.
 
@@ -88,7 +88,7 @@ if (-not (Test-Path '.\pyproject.toml')) {
 }
 uv sync --frozen --no-dev
 Copy-Item '.env.example' '.env'
-New-Item -ItemType Directory -Path 'D:\TranscriptionData' -Force
+New-Item -ItemType Directory -Path 'E:\TranscriptionData' -Force
 ```
 
 Сгенерируйте токен:
@@ -100,7 +100,7 @@ uv run python -c "import secrets; print(secrets.token_urlsafe(32))"
 Откройте `.env` и задайте как минимум:
 
 ```dotenv
-TRANSCRIPTION_DATA_DIR=D:\TranscriptionData
+TRANSCRIPTION_DATA_DIR=E:\TranscriptionData
 TRANSCRIPTION_NOSCRIBE_PATH=C:\Program Files (x86)\noScribe\noScribe.exe
 TRANSCRIPTION_DEFAULT_LANGUAGE=ru
 TRANSCRIPTION_DEFAULT_MODEL=precise
@@ -176,7 +176,7 @@ New-Item -ItemType Directory -Path '.\logs' -Force
 
 - чтение приложения и `.venv`;
 - чтение/запуск `noScribe.exe` и моделей;
-- изменение `D:\TranscriptionData`;
+- изменение `E:\TranscriptionData`;
 - изменение `deploy\windows-service\logs`;
 - право **Log on as a service**.
 
@@ -255,14 +255,14 @@ http://<IP-СЕРВЕРА>:8000
 
 ## 9. Где находятся данные
 
-При `TRANSCRIPTION_DATA_DIR=D:\TranscriptionData`:
+При `TRANSCRIPTION_DATA_DIR=E:\TranscriptionData`:
 
 ```text
-D:\TranscriptionData\jobs.sqlite3
-D:\TranscriptionData\jobs\<job-id>\source.webm
-D:\TranscriptionData\jobs\<job-id>\transcript.vtt
-D:\TranscriptionData\jobs\<job-id>\manifest.json
-D:\TranscriptionData\jobs\<job-id>\noscribe.log
+E:\TranscriptionData\jobs.sqlite3
+E:\TranscriptionData\jobs\<job-id>\source.webm
+E:\TranscriptionData\jobs\<job-id>\transcript.vtt
+E:\TranscriptionData\jobs\<job-id>\manifest.json
+E:\TranscriptionData\jobs\<job-id>\noscribe.log
 ```
 
 Исходная запись полностью копируется на сервер. noScribe не обращается к диску клиентского компьютера.
