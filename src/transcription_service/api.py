@@ -10,9 +10,15 @@ from fastapi import Cookie, Depends, FastAPI, File, Form, HTTPException, Query, 
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from .admin_repository import AdminRepository
+from .admin_service import AdminService
+from .attribution_repository import AttributionRepository
+from .attribution_service import AttributionService
+from .attribution_worker import AttributionWorker
 from .auth import hash_password, new_session_token, verify_password
 from .config import Settings
 from .database import JobRepository
+from .frames import FFmpegFrameExtractor
 from .models import (
     AuthCredentials,
     HealthResponse,
@@ -23,6 +29,10 @@ from .models import (
     UserResponse,
 )
 from .noscribe import NoScribeRunner
+from .routerai import RouterAIClient
+from .routes.admin_settings import create_router as create_admin_settings_router
+from .routes.admin_statistics import create_router as create_admin_statistics_router
+from .routes.attribution import create_router as create_attribution_router
 from .service import JobService, ServiceError
 from .worker import JobWorker
 
@@ -35,23 +45,46 @@ def create_app(
     runner: NoScribeRunner | None = None,
     *,
     start_worker: bool = True,
+    routerai: RouterAIClient | None = None,
+    frame_extractor: FFmpegFrameExtractor | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
     runner = runner or NoScribeRunner(settings)
     repository = JobRepository(settings.database_path)
     service = JobService(settings, repository, runner)
     worker = JobWorker(service)
+    routerai = routerai or RouterAIClient(
+        settings.routerai_base_url, settings.routerai_timeout_seconds
+    )
+    frame_extractor = frame_extractor or FFmpegFrameExtractor(settings.resolved_ffmpeg_path)
+    attribution_repository = AttributionRepository(settings.database_path)
+    admin_repository = AdminRepository(settings.database_path)
+    admin_service = AdminService(admin_repository, routerai, settings.jobs_dir)
+    attribution_service = AttributionService(
+        repository,
+        attribution_repository,
+        admin_repository,
+        admin_service,
+        routerai,
+        frame_extractor,
+        settings.jobs_dir,
+        settings.attribution_max_frames,
+    )
+    attribution_worker = AttributionWorker(attribution_service, attribution_repository)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         service.initialize()
+        attribution_repository.recover_running()
         await asyncio.to_thread(service.refresh_readiness)
         if start_worker:
             worker.start()
+            attribution_worker.start()
         try:
             yield
         finally:
             await worker.stop()
+            await attribution_worker.stop()
 
     app = FastAPI(
         title="Local Transcription Service",
@@ -61,6 +94,9 @@ def create_app(
     app.state.settings = settings
     app.state.service = service
     app.state.worker = worker
+    app.state.attribution_worker = attribution_worker
+    app.state.attribution_service = attribution_service
+    app.state.admin_service = admin_service
     dummy_password_hash = hash_password("invalid-authentication-password")
 
     static_dir = Path(__file__).with_name("static")
@@ -72,6 +108,11 @@ def create_app(
         user = repository.get_user_by_session(session_token) if session_token else None
         if user is None:
             raise HTTPException(status_code=401, detail="Требуется вход в систему")
+        return user
+
+    async def require_admin(user: Annotated[User, Depends(current_user)]) -> User:
+        if not user.is_admin:
+            raise HTTPException(status_code=403, detail="Требуются права администратора")
         return user
 
     def normalize_email(email: str) -> str:
@@ -152,6 +193,18 @@ def create_app(
     @app.get("/api/v1/auth/me", response_model=UserResponse)
     async def me(user: Annotated[User, Depends(current_user)]) -> UserResponse:
         return _user_response(user)
+
+    app.include_router(
+        create_attribution_router(
+            current_user,
+            attribution_service,
+            attribution_repository,
+            attribution_worker,
+            settings.jobs_dir,
+        )
+    )
+    app.include_router(create_admin_statistics_router(require_admin, admin_service))
+    app.include_router(create_admin_settings_router(require_admin, admin_service))
 
     @app.post(
         "/api/v1/jobs",
@@ -237,7 +290,13 @@ def _job_response(job: TranscriptionJob) -> JobResponse:
 
 
 def _user_response(user: User) -> UserResponse:
-    return UserResponse(id=user.id, email=user.email, created_at=user.created_at)
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        created_at=user.created_at,
+        role=user.role,
+        is_admin=user.is_admin,
+    )
 
 
 app = create_app()

@@ -8,7 +8,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .auth import hash_session_token
-from .models import JobStatus, TranscriptionJob, User
+from .migrations import apply_migrations
+from .models import JobStatus, TranscriptionJob, User, UserRole
 
 
 def utc_now() -> datetime:
@@ -81,7 +82,8 @@ class JobRepository:
                     email TEXT NOT NULL UNIQUE COLLATE NOCASE,
                     password_hash TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    is_active INTEGER NOT NULL DEFAULT 1
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('user','admin'))
                 )
                 """
             )
@@ -102,6 +104,7 @@ class JobRepository:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)"
             )
+            apply_migrations(connection)
 
     def create(self, job: TranscriptionJob) -> None:
         values = job.model_dump(mode="json")
@@ -137,20 +140,54 @@ class JobRepository:
                 ).fetchall()
         return [self._to_job(row) for row in rows]
 
-    def create_user(self, email: str, password_hash: str) -> User:
+    def create_user(
+        self, email: str, password_hash: str, role: UserRole = UserRole.USER
+    ) -> User:
         user = User(
             id=str(uuid.uuid4()),
             email=email,
             password_hash=password_hash,
             created_at=utc_now(),
+            role=role,
         )
         with self._connect() as connection:
             connection.execute(
-                "INSERT INTO users (id, email, password_hash, created_at, is_active) "
-                "VALUES (?, ?, ?, ?, 1)",
-                (user.id, user.email, user.password_hash, user.created_at.isoformat()),
+                "INSERT INTO users (id, email, password_hash, created_at, is_active, role) "
+                "VALUES (?, ?, ?, ?, 1, ?)",
+                (
+                    user.id,
+                    user.email,
+                    user.password_hash,
+                    user.created_at.isoformat(),
+                    user.role.value,
+                ),
             )
         return user
+
+    def set_user_role(self, user_id: str, role: UserRole) -> User:
+        with self._connect() as connection:
+            if role is not UserRole.ADMIN:
+                row = connection.execute(
+                    "SELECT role, is_active FROM users WHERE id = ?", (user_id,)
+                ).fetchone()
+                if row and row["role"] == UserRole.ADMIN.value and row["is_active"]:
+                    count = connection.execute(
+                        "SELECT COUNT(*) FROM users WHERE role = 'admin' AND is_active = 1"
+                    ).fetchone()[0]
+                    if count <= 1:
+                        raise ValueError("Нельзя понизить последнего активного администратора")
+            cursor = connection.execute(
+                "UPDATE users SET role = ? WHERE id = ?", (role.value, user_id)
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Пользователь не найден")
+            row = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return self._to_user(row)
+
+    def list_users(self) -> list[User]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM users ORDER BY created_at").fetchall()
+        return [self._to_user(row) for row in rows]
 
     def get_user_by_email(self, email: str) -> User | None:
         with self._connect() as connection:
@@ -275,4 +312,5 @@ class JobRepository:
     def _to_user(row: sqlite3.Row) -> User:
         values = dict(row)
         values["is_active"] = bool(values["is_active"])
+        values.setdefault("role", UserRole.USER.value)
         return User.model_validate(values)

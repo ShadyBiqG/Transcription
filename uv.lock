@@ -173,6 +173,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
     { name = "pywinpty", marker = "sys_platform == 'win32'" },
@@ -181,7 +182,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "jsonschema" },
     { name = "pytest" },
     { name = "ruff" },
@@ -190,6 +190,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.116" },
+    { name = "httpx", specifier = ">=0.28" },
     { name = "python-dotenv", specifier = ">=1.1" },
     { name = "python-multipart", specifier = ">=0.0.20" },
     { name = "pywinpty", marker = "sys_platform == 'win32'", specifier = ">=3.0.2,<4" },
@@ -198,7 +199,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "httpx", specifier = ">=0.28" },
     { name = "jsonschema", specifier = ">=4.25" },
     { name = "pytest", specifier = ">=8.4" },
     { name = "ruff", specifier = ">=0.12" },

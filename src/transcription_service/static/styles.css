@@ -36,4 +36,19 @@ button.secondary { background: #1a2942; color: #dce8fa; }
 .badge.queued { background: #1d3150; color: #9bc8ff; }
 #health[data-ok="true"] { color: #8cf2d9; }
 #health[data-ok="false"] { color: #ff9aad; }
+.tabs { display: flex; gap: .5rem; flex-wrap: wrap; margin: 1rem 0; }
+.tab { background: #1c2940; color: #c7d3e5; }
+.tab.active { background: #76d8c4; color: #0b1423; }
+.metric-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(150px,1fr)); gap: 1rem; }
+.metric { padding: 1rem; border-radius: 12px; background: #0f182a; display: grid; gap: .4rem; }
+.metric strong { font-size: 1.5rem; }
+.admin-form { display: grid; gap: 1rem; max-width: 760px; }
+.admin-form fieldset { border: 1px solid #29354c; border-radius: 10px; padding: 1rem; }
+.check { display: flex; gap: .6rem; align-items: center; }
+.model-list { display: grid; gap: .5rem; max-height: 320px; overflow: auto; }
+.table-wrap { overflow-x: auto; margin-top: 1rem; }
+.table-wrap table { border-collapse: collapse; width: 100%; }
+.table-wrap th, .table-wrap td { padding: .65rem; border-bottom: 1px solid #29354c; text-align: left; }
+.attribution { grid-column: 1 / -1; display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
+.segments { grid-column: 1 / -1; display: flex; gap: .4rem; flex-wrap: wrap; }
 @media (max-width: 680px) { .status-panel { align-items: stretch; flex-direction: column; } .account { justify-content: space-between; } .controls button { margin-left: 0; width: 100%; } }

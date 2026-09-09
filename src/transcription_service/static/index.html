@@ -48,6 +48,14 @@
       </div>
     </section>
 
+    <nav class="tabs" aria-label="Разделы">
+      <button class="tab active" data-section="workspace" type="button">Транскрибация</button>
+      <button class="tab admin-only" data-section="admin-overview" type="button" hidden>Общая статистика</button>
+      <button class="tab admin-only" data-section="admin-models" type="button" hidden>Внешние модели</button>
+      <button class="tab admin-only" data-section="admin-settings" type="button" hidden>Администрирование</button>
+    </nav>
+
+    <div id="workspace" class="app-section">
     <section class="panel">
       <form id="upload-form">
         <label class="file-drop" for="file">
@@ -90,6 +98,32 @@
         <button id="refresh" class="secondary" type="button">Обновить</button>
       </div>
       <div id="jobs" class="jobs"></div>
+    </section>
+    </div>
+
+    <section id="admin-overview" class="app-section panel" hidden>
+      <div class="section-title"><h2>Общая статистика</h2><button data-admin-refresh="overview" class="secondary">Обновить</button></div>
+      <div id="overview-cards" class="metric-grid"></div>
+    </section>
+
+    <section id="admin-models" class="app-section panel" hidden>
+      <div class="section-title"><h2>Статистика и стоимость внешних моделей</h2><button data-admin-refresh="usage" class="secondary">Обновить</button></div>
+      <div id="usage-cards" class="metric-grid"></div><div id="usage-table" class="table-wrap"></div>
+    </section>
+
+    <section id="admin-settings" class="app-section panel" hidden>
+      <div class="section-title"><h2>Администрирование параметров</h2><button id="refresh-catalog" class="secondary">Обновить каталог RouterAI</button></div>
+      <form id="admin-form" class="admin-form">
+        <label class="check"><input id="provider-enabled" type="checkbox"> Разрешить обращения к RouterAI</label>
+        <label>API-ключ <input id="routerai-key" type="password" placeholder="Сохранённый ключ не отображается"></label>
+        <label>Основная модель <select id="primary-model"></select></label>
+        <label>Резервная модель <select id="fallback-model"></select></label>
+        <fieldset><legend>Разрешённые модели</legend><div id="allowed-models" class="model-list"></div></fieldset>
+        <label>Общий лимит, ₽ <input id="global-budget" inputmode="decimal"></label>
+        <label>Лимит на запуск, ₽ <input id="job-budget" inputmode="decimal"></label>
+        <div class="auth-actions"><button type="submit">Сохранить</button><button id="test-routerai" type="button" class="secondary">Проверить ключ</button></div>
+      </form>
+      <p id="admin-message" role="status"></p>
     </section>
   </main>
   <script src="/static/app.js" defer></script>

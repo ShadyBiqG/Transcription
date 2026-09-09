@@ -9,6 +9,7 @@ const messageNode = document.querySelector("#message");
 const healthNode = document.querySelector("#health");
 let refreshTimer = null;
 let healthTimer = null;
+const attributionRuns = new Map();
 
 function showAuth() {
   appShell.hidden = true;
@@ -22,6 +23,7 @@ function showApp(user) {
   authShell.hidden = true;
   appShell.hidden = false;
   currentUser.textContent = user.email;
+  document.querySelectorAll(".admin-only").forEach((node) => { node.hidden = !user.is_admin; });
   clearInterval(refreshTimer);
   clearInterval(healthTimer);
   refreshJobs();
@@ -118,6 +120,12 @@ function renderJob(job) {
       + `<a data-download="${job.transcript_url}" href="#">Скачать файл</a>`
     : "";
   const completedFallback = job.status === "running" ? "выполняется" : "—";
+  const run = attributionRuns.get(job.id);
+  const attribution = job.status === "completed" ? `
+    <div class="attribution"><button data-attribution="${job.id}" type="button">Определить подписи по видео</button>
+    ${run ? `<span class="badge ${run.status}">${escapeHtml(run.status)}</span>` : ""}
+    ${run?.attributed_transcript_url ? `<a data-open="${run.attributed_transcript_url}" href="#">Результат с подписями</a>` : ""}</div>
+    ${run?.segments?.length ? `<div class="segments">${run.segments.map((segment) => `<button class="secondary" data-segment="${segment.id}" data-run="${run.id}" data-job="${job.id}" type="button">${escapeHtml(segment.manual_label || segment.speaker_label || "unknown")} · ${Math.floor(segment.start_ms / 1000)}с</button>`).join("")}</div>` : ""}` : "";
   card.innerHTML = `
     <div><strong>${escapeHtml(job.original_filename)}</strong><span>${formatSize(job.size_bytes)}</span></div>
     <span class="badge ${job.status}">${job.status}</span>
@@ -127,7 +135,9 @@ function renderJob(job) {
       <span><b>Начало:</b> ${formatDateTime(job.started_at, "ожидает запуска")}</span>
       <span><b>Окончание:</b> ${formatDateTime(job.completed_at, completedFallback)}</span>
     </div>
-    <footer>${downloads}<a data-download="${job.manifest_url}" href="#">Manifest</a></footer>`;
+    ${attribution}<footer>${downloads}<a data-download="${job.manifest_url}" href="#">Manifest</a></footer>`;
+  card.querySelector("[data-attribution]")?.addEventListener("click", () => startAttribution(job.id));
+  card.querySelectorAll("[data-segment]").forEach((button) => button.addEventListener("click", () => editSpeaker(button)));
   card.querySelectorAll("[data-download]").forEach((link) => {
     link.addEventListener("click", async (event) => {
       event.preventDefault();
@@ -141,6 +151,40 @@ function renderJob(job) {
     });
   });
   return card;
+}
+
+async function editSpeaker(button) {
+  const speakerLabel = window.prompt("Введите подпись говорящего", button.textContent.split(" · ")[0]);
+  if (!speakerLabel?.trim()) return;
+  try {
+    const path = `/api/v1/jobs/${button.dataset.job}/attribution-runs/${button.dataset.run}/segments/${button.dataset.segment}`;
+    await api(path, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ speaker_label: speakerLabel.trim() }) });
+    await pollAttribution(button.dataset.job, button.dataset.run);
+  } catch (error) { messageNode.textContent = error.message; }
+}
+
+async function startAttribution(jobId) {
+  const consent = window.confirm("В RouterAI будут отправлены только кадры видео. Аудио и текст не передаются. Продолжить?");
+  if (!consent) return;
+  try {
+    const response = await api(`/api/v1/jobs/${jobId}/attribution-runs`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ external_processing_consent: true }),
+    });
+    const run = await response.json();
+    attributionRuns.set(jobId, run);
+    pollAttribution(jobId, run.id);
+    await refreshJobs();
+  } catch (error) { messageNode.textContent = error.message; }
+}
+
+async function pollAttribution(jobId, runId) {
+  try {
+    const run = await (await api(`/api/v1/jobs/${jobId}/attribution-runs/${runId}`)).json();
+    attributionRuns.set(jobId, run);
+    await refreshJobs();
+    if (["queued", "running"].includes(run.status)) setTimeout(() => pollAttribution(jobId, runId), 2500);
+  } catch (error) { messageNode.textContent = error.message; }
 }
 
 function escapeHtml(value) {
@@ -206,6 +250,62 @@ form.addEventListener("submit", async (event) => {
 });
 
 document.querySelector("#refresh").addEventListener("click", refreshJobs);
+
+document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", async () => {
+  document.querySelectorAll(".tab").forEach((node) => node.classList.toggle("active", node === tab));
+  document.querySelectorAll(".app-section").forEach((node) => { node.hidden = node.id !== tab.dataset.section; });
+  if (tab.dataset.section === "admin-overview") await loadOverview();
+  if (tab.dataset.section === "admin-models") await loadUsage();
+  if (tab.dataset.section === "admin-settings") await loadAdminSettings();
+}));
+
+function showMetrics(selector, values) {
+  document.querySelector(selector).innerHTML = Object.entries(values).map(([label, value]) => `<div class="metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value ?? 0))}</strong></div>`).join("");
+}
+
+async function loadOverview() {
+  const node = document.querySelector("#overview-cards"); node.textContent = "Загрузка…";
+  try { const data = await (await api("/api/v1/admin/statistics/overview")).json();
+    showMetrics("#overview-cards", { Пользователи: data.users, Задания: data.jobs, Завершено: data.completed_jobs, Ошибки: data.failed_jobs, "Хранилище, байт": data.storage_bytes });
+  } catch (error) { node.textContent = `Не удалось загрузить статистику: ${error.message}`; }
+}
+
+async function loadUsage() {
+  const node = document.querySelector("#usage-cards"); node.textContent = "Загрузка…";
+  let data;
+  try { data = await (await api("/api/v1/admin/external-usage")).json(); }
+  catch (error) { node.textContent = `Не удалось загрузить расходы: ${error.message}`; return; }
+  showMetrics("#usage-cards", { Вызовы: data.calls, Успешно: data.successful_calls, Ошибки: data.failed_calls, Кадры: data.images, "Стоимость, ₽": data.confirmed_cost });
+  document.querySelector("#usage-table").innerHTML = data.items.length ? `<table><thead><tr><th>Время</th><th>Модель</th><th>Статус</th><th>Кадры</th><th>Стоимость</th></tr></thead><tbody>${data.items.map((item) => `<tr><td>${formatDateTime(item.created_at)}</td><td>${escapeHtml(item.actual_model || item.requested_model)}</td><td>${escapeHtml(item.status)}</td><td>${item.image_count}</td><td>${item.provider_cost ?? "—"}</td></tr>`).join("")}</tbody></table>` : "Внешних обращений за выбранный период нет.";
+}
+
+async function loadAdminSettings() {
+  const message = document.querySelector("#admin-message"); message.textContent = "Загрузка…";
+  const settings = await (await api("/api/v1/admin/settings")).json();
+  const catalog = await (await api("/api/v1/admin/models")).json();
+  document.querySelector("#provider-enabled").checked = settings.provider_enabled;
+  document.querySelector("#global-budget").value = settings.global_budget || "";
+  document.querySelector("#job-budget").value = settings.default_job_budget || "";
+  const options = catalog.models.map((model) => `<option value="${escapeHtml(model.model_id)}">${escapeHtml(model.name)}</option>`).join("");
+  document.querySelector("#primary-model").innerHTML = options;
+  document.querySelector("#fallback-model").innerHTML = options;
+  document.querySelector("#primary-model").value = settings.primary_model_id;
+  document.querySelector("#fallback-model").value = settings.fallback_model_id;
+  document.querySelector("#allowed-models").innerHTML = catalog.models.map((model) => `<label class="check"><input type="checkbox" value="${escapeHtml(model.model_id)}" ${model.allowed ? "checked" : ""}> ${escapeHtml(model.name)}</label>`).join("") || "Сначала обновите каталог.";
+  message.textContent = catalog.stale ? `Используется последний успешный каталог: ${catalog.last_error || "обновление не удалось"}` : catalog.models.length ? `Каталог обновлён: ${formatDateTime(catalog.fetched_at)}` : "Каталог пуст — нажмите «Обновить каталог RouterAI».";
+}
+
+document.querySelector("#admin-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const body = { provider_enabled: document.querySelector("#provider-enabled").checked, primary_model_id: document.querySelector("#primary-model").value, fallback_model_id: document.querySelector("#fallback-model").value, allowed_model_ids: [...document.querySelectorAll("#allowed-models input:checked")].map((node) => node.value), global_budget: document.querySelector("#global-budget").value || null, default_job_budget: document.querySelector("#job-budget").value || null };
+  const key = document.querySelector("#routerai-key").value; if (key) body.api_key = key;
+  try { await api("/api/v1/admin/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); document.querySelector("#admin-message").textContent = "Настройки сохранены"; }
+  catch (error) { document.querySelector("#admin-message").textContent = error.message; }
+});
+
+document.querySelector("#refresh-catalog").addEventListener("click", async () => { await api("/api/v1/admin/models/refresh", { method: "POST" }); await loadAdminSettings(); });
+document.querySelector("#test-routerai").addEventListener("click", async () => { const data = await (await api("/api/v1/admin/settings/test", { method: "POST" })).json(); document.querySelector("#admin-message").textContent = data.ok ? "RouterAI доступен" : "Ключ не настроен или отклонён"; });
+document.querySelectorAll("[data-admin-refresh]").forEach((node) => node.addEventListener("click", () => node.dataset.adminRefresh === "overview" ? loadOverview() : loadUsage()));
 
 async function initialize() {
   try {
