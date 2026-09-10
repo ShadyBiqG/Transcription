@@ -24,9 +24,11 @@ function showApp(user) {
   appShell.hidden = false;
   currentUser.textContent = user.email;
   document.querySelectorAll(".admin-only").forEach((node) => { node.hidden = !user.is_admin; });
+  document.querySelector("#main-tabs").hidden = !user.is_admin;
   clearInterval(refreshTimer);
   clearInterval(healthTimer);
   refreshJobs();
+  loadPersonalUsage();
   refreshHealth();
   refreshTimer = setInterval(refreshJobs, 3000);
   healthTimer = setInterval(refreshHealth, 15000);
@@ -164,7 +166,7 @@ async function editSpeaker(button) {
 }
 
 async function startAttribution(jobId) {
-  const consent = window.confirm("В RouterAI будут отправлены только кадры видео. Аудио и текст не передаются. Продолжить?");
+  const consent = window.confirm("Внешнему провайдеру будут отправлены только кадры видео. Аудио и текст не передаются. Продолжить?");
   if (!consent) return;
   try {
     const response = await api(`/api/v1/jobs/${jobId}/attribution-runs`, {
@@ -263,10 +265,31 @@ function showMetrics(selector, values) {
   document.querySelector(selector).innerHTML = Object.entries(values).map(([label, value]) => `<div class="metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value ?? 0))}</strong></div>`).join("");
 }
 
+function usageTotalsRow(data, columns = 9) {
+  return `<tfoot><tr><th>Итого</th><th>${data.calls ?? 0}</th><th>${data.successful_calls ?? 0}</th><th>${data.failed_calls ?? 0}</th><th>${data.retries ?? 0}</th><th>${data.images ?? 0}</th><th>${data.input_units ?? 0}</th><th>${data.output_units ?? 0}</th><th colspan="${Math.max(1, columns - 8)}">${escapeHtml(String(data.confirmed_cost ?? "0"))} ₽</th></tr></tfoot>`;
+}
+
+function usageByUserTable(data) {
+  if (!data.by_user?.length) return "Внешних обращений пока нет.";
+  const rows = data.by_user.map((item) => `<tr><td>${escapeHtml(item.email)}</td><td>${item.calls}</td><td>${item.successful_calls}</td><td>${item.failed_calls}</td><td>${item.retries}</td><td>${item.images}</td><td>${item.input_units}</td><td>${item.output_units}</td><td>${escapeHtml(item.confirmed_cost)} ₽</td></tr>`).join("");
+  return `<table><thead><tr><th>Пользователь</th><th>Вызовы</th><th>Успешно</th><th>Ошибки</th><th>Повторы</th><th>Кадры</th><th>Вход</th><th>Выход</th><th>Стоимость</th></tr></thead><tbody>${rows}</tbody>${usageTotalsRow(data)}</table>`;
+}
+
+async function loadPersonalUsage() {
+  const cards = document.querySelector("#personal-usage-cards"); cards.textContent = "Загрузка…";
+  try {
+    const data = await (await api("/api/v1/external-usage")).json();
+    showMetrics("#personal-usage-cards", { Вызовы: data.calls, Успешно: data.successful_calls, Ошибки: data.failed_calls, Кадры: data.images, "Стоимость, ₽": data.confirmed_cost });
+    document.querySelector("#personal-usage-table").innerHTML = usageByUserTable(data);
+  } catch (error) { cards.textContent = `Не удалось загрузить статистику: ${error.message}`; }
+}
+
 async function loadOverview() {
   const node = document.querySelector("#overview-cards"); node.textContent = "Загрузка…";
   try { const data = await (await api("/api/v1/admin/statistics/overview")).json();
-    showMetrics("#overview-cards", { Пользователи: data.users, Задания: data.jobs, Завершено: data.completed_jobs, Ошибки: data.failed_jobs, "Хранилище, байт": data.storage_bytes });
+    showMetrics("#overview-cards", { Пользователи: data.users, Задания: data.jobs, Завершено: data.completed_jobs, Ошибки: data.failed_jobs, "В очереди/работе": data.active_jobs, "Хранилище, байт": data.storage_bytes });
+    const rows = data.by_user.map((item) => `<tr><td>${escapeHtml(item.email)}</td><td>${escapeHtml(item.role)}</td><td>${item.jobs}</td><td>${item.completed_jobs}</td><td>${item.failed_jobs}</td><td>${item.active_jobs}</td><td>${formatSize(item.source_bytes)}</td></tr>`).join("");
+    document.querySelector("#overview-table").innerHTML = `<table><thead><tr><th>Пользователь</th><th>Роль</th><th>Задания</th><th>Завершено</th><th>Ошибки</th><th>В очереди/работе</th><th>Объём</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><th colspan="2">Итого</th><th>${data.jobs}</th><th>${data.completed_jobs}</th><th>${data.failed_jobs}</th><th>${data.active_jobs}</th><th>${formatSize(data.source_bytes)}</th></tr></tfoot></table>`;
   } catch (error) { node.textContent = `Не удалось загрузить статистику: ${error.message}`; }
 }
 
@@ -276,7 +299,8 @@ async function loadUsage() {
   try { data = await (await api("/api/v1/admin/external-usage")).json(); }
   catch (error) { node.textContent = `Не удалось загрузить расходы: ${error.message}`; return; }
   showMetrics("#usage-cards", { Вызовы: data.calls, Успешно: data.successful_calls, Ошибки: data.failed_calls, Кадры: data.images, "Стоимость, ₽": data.confirmed_cost });
-  document.querySelector("#usage-table").innerHTML = data.items.length ? `<table><thead><tr><th>Время</th><th>Модель</th><th>Статус</th><th>Кадры</th><th>Стоимость</th></tr></thead><tbody>${data.items.map((item) => `<tr><td>${formatDateTime(item.created_at)}</td><td>${escapeHtml(item.actual_model || item.requested_model)}</td><td>${escapeHtml(item.status)}</td><td>${item.image_count}</td><td>${item.provider_cost ?? "—"}</td></tr>`).join("")}</tbody></table>` : "Внешних обращений за выбранный период нет.";
+  document.querySelector("#usage-table").innerHTML = usageByUserTable(data);
+  document.querySelector("#usage-details").innerHTML = data.items.length ? `<table><thead><tr><th>Время</th><th>Провайдер</th><th>Модель</th><th>Статус</th><th>Кадры</th><th>Стоимость</th></tr></thead><tbody>${data.items.map((item) => `<tr><td>${formatDateTime(item.created_at)}</td><td>${escapeHtml(item.provider)}</td><td>${escapeHtml(item.actual_model || item.requested_model)}</td><td>${escapeHtml(item.status)}</td><td>${item.image_count}</td><td>${item.provider_cost ?? "—"}</td></tr>`).join("")}</tbody></table>` : "Обращений нет.";
 }
 
 async function loadAdminSettings() {
@@ -284,28 +308,30 @@ async function loadAdminSettings() {
   const settings = await (await api("/api/v1/admin/settings")).json();
   const catalog = await (await api("/api/v1/admin/models")).json();
   document.querySelector("#provider-enabled").checked = settings.provider_enabled;
+  document.querySelector("#provider-name").value = settings.provider_name;
+  document.querySelector("#provider-base-url").value = settings.provider_base_url;
   document.querySelector("#global-budget").value = settings.global_budget || "";
   document.querySelector("#job-budget").value = settings.default_job_budget || "";
   const options = catalog.models.map((model) => `<option value="${escapeHtml(model.model_id)}">${escapeHtml(model.name)}</option>`).join("");
-  document.querySelector("#primary-model").innerHTML = options;
-  document.querySelector("#fallback-model").innerHTML = options;
+  document.querySelector("#model-options").innerHTML = options;
   document.querySelector("#primary-model").value = settings.primary_model_id;
   document.querySelector("#fallback-model").value = settings.fallback_model_id;
-  document.querySelector("#allowed-models").innerHTML = catalog.models.map((model) => `<label class="check"><input type="checkbox" value="${escapeHtml(model.model_id)}" ${model.allowed ? "checked" : ""}> ${escapeHtml(model.name)}</label>`).join("") || "Сначала обновите каталог.";
-  message.textContent = catalog.stale ? `Используется последний успешный каталог: ${catalog.last_error || "обновление не удалось"}` : catalog.models.length ? `Каталог обновлён: ${formatDateTime(catalog.fetched_at)}` : "Каталог пуст — нажмите «Обновить каталог RouterAI».";
+  document.querySelector("#allowed-models").value = settings.allowed_model_ids.join("\n");
+  message.textContent = catalog.stale ? `Список моделей недоступен: ${catalog.last_error || "ошибка провайдера"}. Введите идентификаторы моделей вручную.` : catalog.models.length ? `Список моделей получен: ${formatDateTime(catalog.fetched_at)}. Можно выбрать вариант или ввести свой.` : "Список моделей пуст. Введите идентификаторы моделей вручную.";
 }
 
 document.querySelector("#admin-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const body = { provider_enabled: document.querySelector("#provider-enabled").checked, primary_model_id: document.querySelector("#primary-model").value, fallback_model_id: document.querySelector("#fallback-model").value, allowed_model_ids: [...document.querySelectorAll("#allowed-models input:checked")].map((node) => node.value), global_budget: document.querySelector("#global-budget").value || null, default_job_budget: document.querySelector("#job-budget").value || null };
+  const body = { provider_enabled: document.querySelector("#provider-enabled").checked, provider_name: document.querySelector("#provider-name").value.trim(), provider_base_url: document.querySelector("#provider-base-url").value.trim(), primary_model_id: document.querySelector("#primary-model").value.trim(), fallback_model_id: document.querySelector("#fallback-model").value.trim(), allowed_model_ids: document.querySelector("#allowed-models").value.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean), global_budget: document.querySelector("#global-budget").value || null, default_job_budget: document.querySelector("#job-budget").value || null };
   const key = document.querySelector("#routerai-key").value; if (key) body.api_key = key;
   try { await api("/api/v1/admin/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); document.querySelector("#admin-message").textContent = "Настройки сохранены"; }
   catch (error) { document.querySelector("#admin-message").textContent = error.message; }
 });
 
-document.querySelector("#refresh-catalog").addEventListener("click", async () => { await api("/api/v1/admin/models/refresh", { method: "POST" }); await loadAdminSettings(); });
-document.querySelector("#test-routerai").addEventListener("click", async () => { const data = await (await api("/api/v1/admin/settings/test", { method: "POST" })).json(); document.querySelector("#admin-message").textContent = data.ok ? "RouterAI доступен" : "Ключ не настроен или отклонён"; });
+document.querySelector("#refresh-catalog").addEventListener("click", async () => { try { await api("/api/v1/admin/models/refresh", { method: "POST" }); await loadAdminSettings(); } catch (error) { document.querySelector("#admin-message").textContent = `${error.message} Введите модели вручную.`; } });
+document.querySelector("#test-routerai").addEventListener("click", async () => { try { const data = await (await api("/api/v1/admin/settings/test", { method: "POST" })).json(); document.querySelector("#admin-message").textContent = data.ok ? "Провайдер и модель доступны" : "API-ключ не настроен или отклонён"; } catch (error) { document.querySelector("#admin-message").textContent = `Проверка не пройдена: ${error.message}`; } });
 document.querySelectorAll("[data-admin-refresh]").forEach((node) => node.addEventListener("click", () => node.dataset.adminRefresh === "overview" ? loadOverview() : loadUsage()));
+document.querySelector("#refresh-personal-usage").addEventListener("click", loadPersonalUsage);
 
 async function initialize() {
   try {

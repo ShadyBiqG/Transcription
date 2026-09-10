@@ -150,7 +150,8 @@ class AdminRepository:
                 inputs = architecture.get("input_modalities") or []
                 outputs = architecture.get("output_modalities") or []
                 parameters = model.get("supported_parameters") or []
-                compatible = (
+                metadata_available = bool(inputs or outputs or parameters)
+                compatible = not metadata_available or (
                     "image" in inputs
                     and "text" in outputs
                     and "response_format" in parameters
@@ -242,6 +243,7 @@ class AdminRepository:
         requested_model: str,
         image_count: int,
         *,
+        provider: str = "routerai",
         run_id: str | None = None,
         job_id: str | None = None,
         user_id: str | None = None,
@@ -252,15 +254,16 @@ class AdminRepository:
             connection.execute(
                 """
                 INSERT INTO external_model_calls
-                    (id, run_id, job_id, user_id, requested_model, status,
+                    (id, run_id, job_id, user_id, provider, requested_model, status,
                      attempt, is_retry, image_count, created_at)
-                VALUES (?, ?, ?, ?, ?, 'started', ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, 'started', ?, ?, ?, ?)
                 """,
                 (
                     call_id,
                     run_id,
                     job_id,
                     user_id,
+                    provider,
                     requested_model,
                     attempt,
                     int(attempt > 1),
@@ -323,8 +326,10 @@ class AdminRepository:
             totals = connection.execute(
                 f"""
                 SELECT COUNT(*) AS calls,
-                    SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS successful_calls,
-                    SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed_calls,
+                    COALESCE(SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END), 0)
+                        AS successful_calls,
+                    COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END), 0)
+                        AS failed_calls,
                     COALESCE(SUM(is_retry), 0) AS retries,
                     COALESCE(SUM(image_count), 0) AS images,
                     COALESCE(SUM(input_units), 0) AS input_units,
@@ -340,13 +345,38 @@ class AdminRepository:
                 "ORDER BY created_at DESC LIMIT ?",
                 (*parameters, limit),
             ).fetchall()
+            grouped_rows = connection.execute(
+                f"""
+                SELECT c.user_id, COALESCE(u.email, 'Системный вызов') AS email,
+                    COUNT(*) AS calls,
+                    SUM(CASE WHEN c.status='completed' THEN 1 ELSE 0 END) successful_calls,
+                    SUM(CASE WHEN c.status='failed' THEN 1 ELSE 0 END) failed_calls,
+                    COALESCE(SUM(c.is_retry), 0) AS retries,
+                    COALESCE(SUM(c.image_count), 0) AS images,
+                    COALESCE(SUM(c.input_units), 0) AS input_units,
+                    COALESCE(SUM(c.output_units), 0) AS output_units,
+                    COALESCE(SUM(CAST(c.provider_cost AS NUMERIC)), 0) confirmed_cost,
+                    COALESCE(SUM(CAST(c.estimated_cost AS NUMERIC)), 0) estimated_cost
+                FROM (SELECT * FROM external_model_calls WHERE {where}) c
+                LEFT JOIN users u ON u.id=c.user_id
+                GROUP BY c.user_id, u.email ORDER BY u.email
+                """,  # noqa: S608
+                parameters,
+            ).fetchall()
         items = [dict(row) for row in rows]
+        by_user = []
+        for row in grouped_rows:
+            item = dict(row)
+            item["confirmed_cost"] = str(Decimal(str(item["confirmed_cost"])))
+            item["estimated_cost"] = str(Decimal(str(item["estimated_cost"])))
+            by_user.append(item)
         return {
             **dict(totals),
             "confirmed_cost": str(Decimal(str(totals["confirmed_cost"]))),
             "estimated_cost": str(Decimal(str(totals["estimated_cost"]))),
             "currency": "RUB",
             "items": items,
+            "by_user": by_user,
             "updated_at": _now(),
         }
 
@@ -356,14 +386,36 @@ class AdminRepository:
             row = connection.execute(
                 """
                 SELECT COUNT(*) AS jobs,
-                    SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed_jobs,
-                    SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed_jobs,
+                    COALESCE(SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END), 0)
+                        AS completed_jobs,
+                    COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END), 0)
+                        AS failed_jobs,
+                    COALESCE(SUM(CASE WHEN status IN ('queued','running') THEN 1 ELSE 0 END), 0)
+                        AS active_jobs,
                     COALESCE(SUM(size_bytes), 0) AS source_bytes,
                     COALESCE(SUM(duration_ms), 0) AS recording_duration_ms
                 FROM jobs
                 """
             ).fetchone()
-        return {"users": users, **dict(row), "updated_at": _now()}
+            user_rows = connection.execute(
+                """
+                SELECT u.id AS user_id, u.email, u.role,
+                    COUNT(j.id) AS jobs,
+                    SUM(CASE WHEN j.status='completed' THEN 1 ELSE 0 END) completed_jobs,
+                    SUM(CASE WHEN j.status='failed' THEN 1 ELSE 0 END) failed_jobs,
+                    SUM(CASE WHEN j.status IN ('queued','running') THEN 1 ELSE 0 END) active_jobs,
+                    COALESCE(SUM(j.size_bytes), 0) AS source_bytes,
+                    COALESCE(SUM(j.duration_ms), 0) AS recording_duration_ms
+                FROM users u LEFT JOIN jobs j ON j.user_id=u.id
+                GROUP BY u.id, u.email, u.role ORDER BY u.email
+                """
+            ).fetchall()
+        return {
+            "users": users,
+            **dict(row),
+            "by_user": [dict(item) for item in user_rows],
+            "updated_at": _now(),
+        }
 
     def configured_budget(self) -> Decimal | None:
         value = self.get_settings().get("global_budget")

@@ -188,6 +188,9 @@ class AttributionService:
         api_key: str,
         profile: dict[str, Any],
     ) -> tuple[RouterAIResult, str]:
+        provider_base_url = profile.get("provider_base_url")
+        if provider_base_url:
+            self.routerai.base_url = str(provider_base_url).rstrip("/")
         allowed = set(profile.get("allowed_model_ids") or [])
         candidates = [profile.get("primary_model_id"), profile.get("fallback_model_id")]
         candidates = [model for model in candidates if model and (not allowed or model in allowed)]
@@ -198,6 +201,7 @@ class AttributionService:
             call_id = self.admin_repository.create_call(
                 model,
                 len(frame_paths),
+                provider=str(profile.get("provider") or "external"),
                 run_id=run["id"],
                 job_id=run["job_id"],
                 user_id=run["user_id"],

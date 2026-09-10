@@ -140,6 +140,10 @@ class ManualAttributionRequest(BaseModel):
 
 class AdminSettingsUpdate(BaseModel):
     api_key: str | None = Field(default=None, min_length=8, max_length=4096)
+    provider_name: str | None = Field(default=None, min_length=1, max_length=100)
+    provider_base_url: str | None = Field(
+        default=None, min_length=8, max_length=500, pattern=r"^https?://.+"
+    )
     provider_enabled: bool | None = None
     primary_model_id: str | None = Field(default=None, max_length=300)
     fallback_model_id: str | None = Field(default=None, max_length=300)

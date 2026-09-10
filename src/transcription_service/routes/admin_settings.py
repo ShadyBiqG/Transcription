@@ -40,7 +40,7 @@ def create_router(require_admin: Callable[..., User], service: AdminService) -> 
     async def refresh_models(admin: Annotated[User, Depends(require_admin)]) -> dict:
         try:
             return await service.refresh_catalog(admin.id)
-        except RouterAIError as exc:
+        except (RouterAIError, RuntimeError) as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @router.get("/models/{model_id:path}/endpoints")

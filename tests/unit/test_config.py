@@ -22,3 +22,17 @@ def test_paths_are_derived_from_data_directory(settings):
     assert settings.database_path == settings.data_dir / "jobs.sqlite3"
     assert settings.jobs_dir == settings.data_dir / "jobs"
     assert settings.temp_dir == settings.data_dir / "tmp"
+
+
+def test_external_api_environment_names_are_supported(monkeypatch, tmp_path):
+    executable = tmp_path / "noScribe.exe"
+    executable.write_bytes(b"fake")
+    monkeypatch.setenv("TRANSCRIPTION_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("TRANSCRIPTION_NOSCRIBE_PATH", str(executable))
+    monkeypatch.setenv("TRANSCRIPTION_EXTERNAL_API_BASE_URL", "http://gateway.local/v1/")
+    monkeypatch.setenv("TRANSCRIPTION_EXTERNAL_API_TIMEOUT_SECONDS", "15")
+
+    settings = Settings.from_env()
+
+    assert settings.routerai_base_url == "http://gateway.local/v1"
+    assert settings.routerai_timeout_seconds == 15

@@ -1,5 +1,6 @@
 :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #0a0f1d; color: #edf3ff; }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 15% 0%, #1a3152 0, transparent 36rem), #0a0f1d; }
 .shell { width: min(980px, calc(100% - 32px)); margin: 0 auto; padding: 64px 0; }
 .eyebrow, .label { color: #76d8c4; font-size: .78rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
@@ -14,7 +15,7 @@ h1 { margin: .35rem 0; font-size: clamp(2.2rem, 7vw, 4.8rem); line-height: .98; 
 .auth-actions { margin-top: 4px; }
 .auth-actions button { flex: 1; }
 label { display: grid; gap: 8px; color: #b8c4d7; font-size: .88rem; }
-input, select, button { min-height: 44px; border-radius: 10px; border: 1px solid #36445d; background: #111b2e; color: #edf3ff; padding: 10px 12px; }
+input, select, textarea, button { min-height: 44px; border-radius: 10px; border: 1px solid #36445d; background: #111b2e; color: #edf3ff; padding: 10px 12px; }
 button { border: 0; background: #76d8c4; color: #07130f; font-weight: 800; cursor: pointer; }
 button.secondary { background: #1a2942; color: #dce8fa; }
 .file-drop { padding: 26px; border: 1px dashed #49627f; border-radius: 12px; margin-bottom: 16px; }
@@ -49,6 +50,7 @@ button.secondary { background: #1a2942; color: #dce8fa; }
 .table-wrap { overflow-x: auto; margin-top: 1rem; }
 .table-wrap table { border-collapse: collapse; width: 100%; }
 .table-wrap th, .table-wrap td { padding: .65rem; border-bottom: 1px solid #29354c; text-align: left; }
+.table-wrap tfoot th { color: #8cf2d9; border-top: 2px solid #49627f; }
 .attribution { grid-column: 1 / -1; display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
 .segments { grid-column: 1 / -1; display: flex; gap: .4rem; flex-wrap: wrap; }
 @media (max-width: 680px) { .status-panel { align-items: stretch; flex-direction: column; } .account { justify-content: space-between; } .controls button { margin-left: 0; width: 100%; } }

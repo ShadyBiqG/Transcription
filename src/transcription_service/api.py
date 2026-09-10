@@ -194,6 +194,13 @@ def create_app(
     async def me(user: Annotated[User, Depends(current_user)]) -> UserResponse:
         return _user_response(user)
 
+    @app.get("/api/v1/external-usage")
+    async def personal_external_usage(
+        user: Annotated[User, Depends(current_user)],
+        limit: int = Query(default=20, ge=1, le=100),
+    ) -> dict:
+        return admin_service.external_usage(user_id=user.id, limit=limit)
+
     app.include_router(
         create_attribution_router(
             current_user,

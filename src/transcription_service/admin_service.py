@@ -26,6 +26,8 @@ class AdminService:
     def settings_view(self) -> dict[str, Any]:
         values = {
             "provider_enabled": False,
+            "provider_name": "RouterAI",
+            "provider_base_url": self.routerai.base_url,
             "primary_model_id": DEFAULT_PRIMARY_MODEL,
             "fallback_model_id": DEFAULT_FALLBACK_MODEL,
             "allowed_model_ids": [],
@@ -34,7 +36,9 @@ class AdminService:
             "currency": "RUB",
             **self.repository.get_settings(),
         }
-        credential = self.repository.get_credential("routerai")
+        credential = self.repository.get_credential("external")
+        if credential is None:
+            credential = self.repository.get_credential("routerai")
         values["credential"] = (
             {
                 "configured": True,
@@ -46,6 +50,7 @@ class AdminService:
             if credential
             else {"configured": False, "key_hint": None, "enabled": False}
         )
+        values.pop("catalog_provider_base_url", None)
         return values
 
     def update_settings(self, payload: dict[str, Any], admin_user_id: str) -> dict[str, Any]:
@@ -53,35 +58,41 @@ class AdminService:
         if api_key:
             stripped = api_key.strip()
             self.repository.save_credential(
-                "routerai",
+                "external",
                 protect_secret(stripped),
                 mask_secret(stripped),
                 admin_user_id,
             )
+        base_url = payload.get("provider_base_url")
+        if base_url:
+            payload["provider_base_url"] = base_url.rstrip("/")
+            self.routerai.base_url = payload["provider_base_url"]
         allowed = payload.get("allowed_model_ids")
         if allowed is not None:
-            available = {item["model_id"] for item in self.list_models()["models"]}
-            unknown = set(allowed) - available
-            if unknown:
-                names = ", ".join(sorted(unknown))
-                raise ValueError(f"Несовместимые или неизвестные модели: {names}")
-            payload["allowed_model_ids"] = list(dict.fromkeys(allowed))
-        for key in ("primary_model_id", "fallback_model_id"):
-            model = payload.get(key)
-            if model and allowed is not None and model not in payload["allowed_model_ids"]:
-                raise ValueError(f"{key} должна входить в разрешенный список")
+            normalized = [model.strip() for model in allowed if model.strip()]
+            for key in ("primary_model_id", "fallback_model_id"):
+                model = str(payload.get(key) or "").strip()
+                if model and model not in normalized:
+                    normalized.append(model)
+            payload["allowed_model_ids"] = list(dict.fromkeys(normalized))
         clean = dict(payload)
         if clean:
             self.repository.update_settings(clean, admin_user_id)
         return self.settings_view()
 
     async def refresh_catalog(self, admin_user_id: str) -> dict[str, Any]:
+        self.routerai.base_url = self.settings_view()["provider_base_url"]
         try:
             models = await self.routerai.fetch_models()
         except Exception as exc:
             self.repository.mark_catalog_failure(str(exc))
-            raise
+            raise RuntimeError(
+                "Провайдер не отдал каталог моделей. Укажите идентификаторы вручную."
+            ) from exc
         result = self.repository.replace_catalog(models)
+        self.repository.update_settings(
+            {"catalog_provider_base_url": self.routerai.base_url}, admin_user_id
+        )
         self.repository.audit(
             admin_user_id,
             "catalog.refresh",
@@ -94,16 +105,38 @@ class AdminService:
 
     def list_models(self) -> dict[str, Any]:
         catalog = self.repository.list_models(compatible_only=True)
-        allowed = set(self.repository.get_settings().get("allowed_model_ids", []))
+        settings = self.repository.get_settings()
+        allowed = set(settings.get("allowed_model_ids", []))
+        provider_base_url = settings.get("provider_base_url", self.routerai.base_url)
+        if settings.get("catalog_provider_base_url") != provider_base_url:
+            catalog = {
+                "fetched_at": None,
+                "stale": True,
+                "models": [],
+                "last_error": "Для выбранного провайдера список моделей ещё не получен",
+            }
         for model in catalog["models"]:
             model["allowed"] = model["model_id"] in allowed
+        catalog_ids = {model["model_id"] for model in catalog["models"]}
+        for model_id in sorted(allowed - catalog_ids):
+            catalog["models"].append(
+                {
+                    "model_id": model_id,
+                    "name": model_id,
+                    "compatible": True,
+                    "allowed": True,
+                    "manual": True,
+                }
+            )
         return catalog
 
     async def model_details(self, model_id: str) -> dict[str, Any]:
         return await self.routerai.fetch_model_endpoints(model_id)
 
     def get_api_key(self) -> str | None:
-        credential = self.repository.get_credential("routerai")
+        credential = self.repository.get_credential("external")
+        if credential is None:
+            credential = self.repository.get_credential("routerai")
         if not credential or not credential["enabled"]:
             return None
         return unprotect_secret(credential["ciphertext"])
@@ -112,11 +145,9 @@ class AdminService:
         key = self.get_api_key()
         if key is None:
             return False
-        ok = await self.routerai.test_key(key)
-        self.repository.mark_credential_check("routerai", ok)
-        if not ok:
-            return False
+        provider_key = "external" if self.repository.get_credential("external") else "routerai"
         settings = self.settings_view()
+        self.routerai.base_url = settings["provider_base_url"]
         model = settings.get("primary_model_id")
         allowed = settings.get("allowed_model_ids") or []
         if not model or model not in allowed:
@@ -127,7 +158,10 @@ class AdminService:
         if not frame.exists():
             frame.write_bytes(base64.b64decode(_TEST_JPEG_BASE64))
         call_id = self.repository.create_call(
-            model, 1, user_id=admin_user_id
+            model,
+            1,
+            user_id=admin_user_id,
+            provider=settings["provider_name"],
         )
         try:
             result = await self.routerai.analyze_frames(
@@ -137,6 +171,7 @@ class AdminService:
             self.repository.finish_call(
                 call_id, status="failed", error_message=str(exc)[:500]
             )
+            self.repository.mark_credential_check(provider_key, False)
             raise
         self.repository.finish_call(
             call_id,
@@ -147,7 +182,10 @@ class AdminService:
             **result.usage,
         )
         if result.generation_id:
-            generation = await self.routerai.fetch_generation(key, result.generation_id)
+            try:
+                generation = await self.routerai.fetch_generation(key, result.generation_id)
+            except Exception:
+                generation = None
             if generation and generation.get("total_cost") is not None:
                 self.repository.finish_call(
                     call_id,
@@ -155,13 +193,16 @@ class AdminService:
                     provider_cost=str(generation["total_cost"]),
                     cost_source="provider",
                 )
+        self.repository.mark_credential_check(provider_key, True)
         return True
 
     def profile_snapshot(self, profile_id: str) -> dict[str, Any]:
         settings = self.settings_view()
+        self.routerai.base_url = settings["provider_base_url"]
         return {
             "profile_id": profile_id,
-            "provider": "routerai",
+            "provider": settings["provider_name"],
+            "provider_base_url": settings["provider_base_url"],
             "primary_model_id": settings["primary_model_id"],
             "fallback_model_id": settings["fallback_model_id"],
             "allowed_model_ids": settings["allowed_model_ids"],

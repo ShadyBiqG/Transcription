@@ -42,7 +42,7 @@ class Settings:
         if not self.default_language:
             raise ValueError("Язык по умолчанию не может быть пустым")
         if self.routerai_timeout_seconds <= 0:
-            raise ValueError("Таймаут RouterAI должен быть больше нуля")
+            raise ValueError("Таймаут внешнего API должен быть больше нуля")
         if not 1 <= self.attribution_max_frames <= 5:
             raise ValueError("Количество кадров должно быть от 1 до 5")
         if self.model_catalog_refresh_hours <= 0:
@@ -102,10 +102,14 @@ class Settings:
                 else None
             ),
             routerai_base_url=os.getenv(
-                "TRANSCRIPTION_ROUTERAI_BASE_URL", "https://routerai.ru/api/v1"
+                "TRANSCRIPTION_EXTERNAL_API_BASE_URL",
+                os.getenv("TRANSCRIPTION_ROUTERAI_BASE_URL", "https://routerai.ru/api/v1"),
             ).rstrip("/"),
             routerai_timeout_seconds=int(
-                os.getenv("TRANSCRIPTION_ROUTERAI_TIMEOUT_SECONDS", "60")
+                os.getenv(
+                    "TRANSCRIPTION_EXTERNAL_API_TIMEOUT_SECONDS",
+                    os.getenv("TRANSCRIPTION_ROUTERAI_TIMEOUT_SECONDS", "60"),
+                )
             ),
             attribution_max_frames=int(os.getenv("TRANSCRIPTION_ATTRIBUTION_MAX_FRAMES", "3")),
             model_catalog_refresh_hours=int(

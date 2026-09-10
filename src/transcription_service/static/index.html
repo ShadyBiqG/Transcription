@@ -48,14 +48,19 @@
       </div>
     </section>
 
-    <nav class="tabs" aria-label="Разделы">
-      <button class="tab active" data-section="workspace" type="button">Транскрибация</button>
+    <nav id="main-tabs" class="tabs" aria-label="Разделы">
+      <button class="tab active admin-only" data-section="workspace" type="button" hidden>Транскрибация</button>
       <button class="tab admin-only" data-section="admin-overview" type="button" hidden>Общая статистика</button>
       <button class="tab admin-only" data-section="admin-models" type="button" hidden>Внешние модели</button>
       <button class="tab admin-only" data-section="admin-settings" type="button" hidden>Администрирование</button>
     </nav>
 
     <div id="workspace" class="app-section">
+    <section class="panel personal-usage">
+      <div class="section-title"><h2>Моё использование внешних моделей</h2><button id="refresh-personal-usage" class="secondary" type="button">Обновить</button></div>
+      <div id="personal-usage-cards" class="metric-grid"></div>
+      <div id="personal-usage-table" class="table-wrap"></div>
+    </section>
     <section class="panel">
       <form id="upload-form">
         <label class="file-drop" for="file">
@@ -104,21 +109,26 @@
     <section id="admin-overview" class="app-section panel" hidden>
       <div class="section-title"><h2>Общая статистика</h2><button data-admin-refresh="overview" class="secondary">Обновить</button></div>
       <div id="overview-cards" class="metric-grid"></div>
+      <div id="overview-table" class="table-wrap"></div>
     </section>
 
     <section id="admin-models" class="app-section panel" hidden>
       <div class="section-title"><h2>Статистика и стоимость внешних моделей</h2><button data-admin-refresh="usage" class="secondary">Обновить</button></div>
       <div id="usage-cards" class="metric-grid"></div><div id="usage-table" class="table-wrap"></div>
+      <h3>Последние обращения</h3><div id="usage-details" class="table-wrap"></div>
     </section>
 
     <section id="admin-settings" class="app-section panel" hidden>
-      <div class="section-title"><h2>Администрирование параметров</h2><button id="refresh-catalog" class="secondary">Обновить каталог RouterAI</button></div>
+      <div class="section-title"><h2>Администрирование параметров</h2><button id="refresh-catalog" class="secondary">Получить список моделей</button></div>
       <form id="admin-form" class="admin-form">
-        <label class="check"><input id="provider-enabled" type="checkbox"> Разрешить обращения к RouterAI</label>
+        <label class="check"><input id="provider-enabled" type="checkbox"> Разрешить обращения к внешнему провайдеру</label>
+        <label>Название провайдера <input id="provider-name" placeholder="RouterAI"></label>
+        <label>OpenAI-compatible API URL <input id="provider-base-url" type="url" placeholder="https://routerai.ru/api/v1"></label>
         <label>API-ключ <input id="routerai-key" type="password" placeholder="Сохранённый ключ не отображается"></label>
-        <label>Основная модель <select id="primary-model"></select></label>
-        <label>Резервная модель <select id="fallback-model"></select></label>
-        <fieldset><legend>Разрешённые модели</legend><div id="allowed-models" class="model-list"></div></fieldset>
+        <datalist id="model-options"></datalist>
+        <label>Основная модель <input id="primary-model" list="model-options" placeholder="author/model"></label>
+        <label>Резервная модель <input id="fallback-model" list="model-options" placeholder="author/model"></label>
+        <label>Разрешённые модели, по одной в строке <textarea id="allowed-models" rows="6" placeholder="author/model"></textarea></label>
         <label>Общий лимит, ₽ <input id="global-budget" inputmode="decimal"></label>
         <label>Лимит на запуск, ₽ <input id="job-budget" inputmode="decimal"></label>
         <div class="auth-actions"><button type="submit">Сохранить</button><button id="test-routerai" type="button" class="secondary">Проверить ключ</button></div>

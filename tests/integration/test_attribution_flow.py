@@ -40,6 +40,7 @@ class FakeExtractor:
 
 class FakeRouterAI:
     def __init__(self) -> None:
+        self.base_url = "https://provider.test/v1"
         self.calls: list[str] = []
 
     async def fetch_models(self) -> list[dict]:

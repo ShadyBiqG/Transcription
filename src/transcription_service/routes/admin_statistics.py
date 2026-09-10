@@ -7,7 +7,10 @@ from ..admin_service import AdminService
 from ..models import User
 
 
-def create_router(require_admin: Callable[..., User], service: AdminService) -> APIRouter:
+def create_router(
+    require_admin: Callable[..., User],
+    service: AdminService,
+) -> APIRouter:
     router = APIRouter(prefix="/api/v1/admin", tags=["admin-statistics"])
 
     @router.get("/statistics/overview")
