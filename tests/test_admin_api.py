@@ -79,6 +79,28 @@ def test_personal_usage_never_contains_another_user(settings, fake_runner) -> No
     assert payload["items"][0]["requested_model"] == "model-b"
 
 
+def test_external_usage_explains_recorded_failures(settings, fake_runner) -> None:
+    app = create_app(settings, fake_runner, start_worker=False)
+    with TestClient(app) as client:
+        user = register_user(client, "admin@example.com")
+        JobRepository(settings.database_path).set_user_role(user["id"], UserRole.ADMIN)
+        ledger = AdminRepository(settings.database_path)
+        call_id = ledger.create_call("vision/model", 3, user_id=user["id"])
+        ledger.finish_call(
+            call_id,
+            status="failed",
+            error_code="400",
+            error_message="response_format json_schema is not supported",
+        )
+
+        payload = client.get("/api/v1/admin/external-usage").json()
+
+    assert payload["items"][0]["error_category"] == "structured_output"
+    assert "структурированный" in payload["items"][0]["error_summary"]
+    assert payload["failure_reasons"][0]["calls"] == 1
+    assert payload["failure_reasons"][0]["error_code"] == "400"
+
+
 def test_admin_can_configure_manual_openai_compatible_provider(
     settings, fake_runner
 ) -> None:
@@ -111,3 +133,42 @@ def test_admin_can_configure_manual_openai_compatible_provider(
         "vision/manual-primary",
         "vision/manual-fallback",
     }
+
+
+def test_polza_nested_model_metadata_is_imported_as_compatible(
+    settings, fake_runner
+) -> None:
+    with TestClient(create_app(settings, fake_runner, start_worker=False)):
+        repository = AdminRepository(settings.database_path)
+        repository.replace_catalog(
+            [
+                {
+                    "id": "mistralai/mistral-small-3.2-24b-instruct",
+                    "name": "Mistral Small 3.2",
+                    "architecture": {
+                        "input_modalities": ["image", "text"],
+                        "output_modalities": ["text"],
+                    },
+                    "top_provider": {
+                        "supported_parameters": [
+                            "response_format",
+                            "structured_outputs",
+                        ],
+                        "pricing": {
+                            "prompt_per_million": "7.05",
+                            "completion_per_million": "21.17",
+                            "currency": "RUB",
+                        },
+                    },
+                }
+            ]
+        )
+
+        catalog = repository.list_models()
+
+    assert catalog["models"][0]["compatible"] is True
+    assert catalog["models"][0]["supported_parameters"] == [
+        "response_format",
+        "structured_outputs",
+    ]
+    assert catalog["models"][0]["pricing"]["pricing"]["currency"] == "RUB"

@@ -38,6 +38,7 @@ class AttributionRepository:
         job_id: str,
         user_id: str,
         consent: bool,
+        processing_mode: str,
         profile_snapshot: dict[str, Any],
         budget_amount: str | None,
         budget_currency: str,
@@ -48,15 +49,16 @@ class AttributionRepository:
             connection.execute(
                 """
                 INSERT INTO attribution_runs (
-                    id, job_id, user_id, status, consent_at, budget_amount,
+                    id, job_id, user_id, status, consent_at, processing_mode, budget_amount,
                     budget_currency, profile_snapshot_json, created_at, updated_at
-                ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
                     job_id,
                     user_id,
                     now if consent else None,
+                    processing_mode,
                     budget_amount,
                     budget_currency.upper(),
                     json.dumps(profile_snapshot, ensure_ascii=False),
@@ -83,6 +85,37 @@ class AttributionRepository:
         result["profile_snapshot"] = json.loads(result.pop("profile_snapshot_json"))
         return result
 
+    def latest_runs(
+        self, job_ids: list[str], user_id: str, *, ready_only: bool = False
+    ) -> dict[str, dict[str, Any]]:
+        if not job_ids:
+            return {}
+        placeholders = ",".join("?" for _ in job_ids)
+        status_filter = (
+            "AND a.status IN ('completed','blocked_budget')" if ready_only else ""
+        )
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT * FROM (
+                    SELECT a.*, ROW_NUMBER() OVER (
+                        PARTITION BY a.job_id ORDER BY a.created_at DESC, a.id DESC
+                    ) AS position
+                    FROM attribution_runs a
+                    WHERE a.user_id=? AND a.job_id IN ({placeholders})
+                    {status_filter}
+                ) WHERE position=1
+                """,  # noqa: S608
+                (user_id, *job_ids),
+            ).fetchall()
+        results: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            item = dict(row)
+            item.pop("position", None)
+            item["profile_snapshot"] = json.loads(item.pop("profile_snapshot_json"))
+            results[item["job_id"]] = item
+        return results
+
     def claim_next(self) -> dict[str, Any] | None:
         now = _now()
         with self._connect() as connection:
@@ -102,17 +135,40 @@ class AttributionRepository:
 
     def recover_running(self) -> int:
         now = _now()
+        recovered = 0
         with self._connect() as connection:
-            cursor = connection.execute(
+            rows = connection.execute(
                 """
-                UPDATE attribution_runs SET status='failed', completed_at=?, updated_at=?,
-                    error_code='service_restarted',
-                    error_message='Определение говорящих прервано перезапуском сервиса'
+                SELECT id, job_id FROM attribution_runs
                 WHERE status='running'
+                    OR (status='failed' AND error_code='service_restarted')
+                ORDER BY created_at DESC
                 """,
-                (now, now),
-            )
-        return cursor.rowcount
+            ).fetchall()
+            for row in rows:
+                another_active = connection.execute(
+                    """
+                    SELECT 1 FROM attribution_runs
+                    WHERE job_id=? AND id<>? AND status IN ('queued','running')
+                    LIMIT 1
+                    """,
+                    (row["job_id"], row["id"]),
+                ).fetchone()
+                if another_active:
+                    continue
+                cursor = connection.execute(
+                    """
+                    UPDATE attribution_runs SET status='queued', started_at=NULL,
+                        completed_at=NULL, updated_at=?, error_code=NULL, error_message=NULL
+                    WHERE id=? AND (
+                        status='running'
+                        OR (status='failed' AND error_code='service_restarted')
+                    )
+                    """,
+                    (now, row["id"]),
+                )
+                recovered += cursor.rowcount
+        return recovered
 
     def finish(
         self,

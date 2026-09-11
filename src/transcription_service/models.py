@@ -26,6 +26,11 @@ class AttributionStatus(StrEnum):
     BLOCKED_BUDGET = "blocked_budget"
 
 
+class AttributionMode(StrEnum):
+    FAST = "fast"
+    PRECISE = "precise"
+
+
 class TranscriptionJob(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -49,6 +54,17 @@ class TranscriptionJob(BaseModel):
     process_exit_code: int | None = None
 
 
+class AttributionRunSummary(BaseModel):
+    id: str
+    status: AttributionStatus
+    processing_mode: AttributionMode
+    created_at: datetime
+    completed_at: datetime | None = None
+    error_message: str | None = None
+    attributed_transcript_url: str | None = None
+    attribution_json_url: str | None = None
+
+
 class JobResponse(BaseModel):
     id: str
     original_filename: str
@@ -65,6 +81,8 @@ class JobResponse(BaseModel):
     error_message: str | None
     transcript_url: str | None
     manifest_url: str
+    latest_attribution: AttributionRunSummary | None = None
+    saved_attribution: AttributionRunSummary | None = None
 
 
 class HealthResponse(BaseModel):
@@ -104,6 +122,7 @@ class User(BaseModel):
 
 class StartAttributionRequest(BaseModel):
     external_processing_consent: bool
+    processing_mode: AttributionMode = AttributionMode.FAST
     profile_id: str = "balanced"
     budget_amount: str | None = Field(default=None, pattern=r"^\d+(?:\.\d+)?$")
     budget_currency: str = Field(default="RUB", min_length=3, max_length=3)
@@ -124,6 +143,7 @@ class AttributionRunResponse(BaseModel):
     id: str
     job_id: str
     status: AttributionStatus
+    processing_mode: AttributionMode
     created_at: datetime
     updated_at: datetime
     started_at: datetime | None = None

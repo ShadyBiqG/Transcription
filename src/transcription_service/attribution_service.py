@@ -48,6 +48,7 @@ class AttributionService:
         job_id: str,
         user_id: str,
         consent: bool,
+        processing_mode: str,
         profile_id: str,
         budget_amount: str | None,
         budget_currency: str,
@@ -65,6 +66,7 @@ class AttributionService:
             job_id,
             user_id,
             consent,
+            processing_mode,
             profile,
             budget_amount,
             budget_currency,
@@ -101,50 +103,60 @@ class AttributionService:
             profile = run["profile_snapshot"]
             key = self.admin_service.get_api_key() if run["consent_at"] else None
             external_enabled = bool(profile.get("provider_enabled") and key)
-            for segment in segments:
-                if segment["status"] != "pending":
-                    continue
+            pending_groups = _group_pending_segments(
+                segments, precise=run["processing_mode"] == "precise"
+            )
+            unavailable_models: set[str] = set()
+
+            for source_label, group in pending_groups.items():
                 latest_run = self.repository.get_run(run_id)
                 if latest_run.get("consent_revoked_at"):
                     external_enabled = False
                 if not external_enabled:
-                    self.repository.set_attribution(
-                        segment["id"], "unknown", None, None, reason="Внешняя обработка отключена"
+                    self._set_group_attribution(
+                        group, _unknown("Внешняя обработка отключена"), None, None
                     )
                     continue
-                if self._budget_blocked(run):
-                    self.repository.finish(
-                        run_id,
-                        "blocked_budget",
-                        "budget_exceeded",
-                        "Достигнут лимит расходов",
+
+                aggregate = _unknown("Подпись не определена на выбранных кадрах")
+                call_id: str | None = None
+                evidence_segment: dict[str, Any] | None = None
+                for candidate in _representative_segments(group):
+                    if self._budget_blocked(run):
+                        self._mark_pending_unknown(
+                            run_id, "Обработка остановлена: достигнут лимит расходов"
+                        )
+                        self.repository.finish(
+                            run_id,
+                            "blocked_budget",
+                            "budget_exceeded",
+                            "Достигнут лимит расходов",
+                        )
+                        self.publish_artifacts(run_id)
+                        return
+                    frame_paths = self._extract_segment_frames(
+                        job_dir, run_dir, run_id, candidate
                     )
-                    self.publish_artifacts(run_id)
-                    return
-                frame_paths = self._extract_segment_frames(job_dir, run_dir, run_id, segment)
-                try:
-                    model_result, call_id = await self._analyze_with_profile(
-                        run, segment, frame_paths, key, profile
-                    )
-                except AttributionError as exc:
-                    self.repository.set_attribution(
-                        segment["id"],
-                        "unknown",
-                        None,
-                        None,
-                        reason=f"Внешняя модель недоступна: {exc}",
-                    )
-                    continue
-                aggregate = aggregate_frame_results(model_result.results)
-                self.repository.set_attribution(
-                    segment["id"],
-                    aggregate["status"],
-                    aggregate["speaker_label"],
-                    aggregate["confidence"],
-                    aggregate["highlight_bbox"],
-                    aggregate["label_bbox"],
-                    aggregate["reason"],
-                    call_id,
+                    try:
+                        model_result, candidate_call_id = await self._analyze_with_profile(
+                            run,
+                            candidate,
+                            frame_paths,
+                            key,
+                            profile,
+                            unavailable_models,
+                        )
+                    except AttributionError as exc:
+                        aggregate = _unknown(f"Внешняя модель недоступна: {exc}")
+                        continue
+                    aggregate = aggregate_frame_results(model_result.results)
+                    call_id = candidate_call_id
+                    evidence_segment = candidate
+                    if aggregate["status"] == "detected":
+                        break
+
+                self._set_group_attribution(
+                    group, aggregate, call_id, evidence_segment, source_label=source_label
                 )
             self.repository.finish(run_id, "completed")
             self.publish_artifacts(run_id)
@@ -180,6 +192,45 @@ class AttributionService:
             paths.append(extracted.path)
         return paths
 
+    def _set_group_attribution(
+        self,
+        segments: list[dict[str, Any]],
+        aggregate: dict[str, Any],
+        call_id: str | None,
+        evidence_segment: dict[str, Any] | None,
+        *,
+        source_label: str | None = None,
+    ) -> None:
+        for segment in segments:
+            reason = aggregate["reason"]
+            if (
+                aggregate["status"] == "detected"
+                and evidence_segment is not None
+                and segment["id"] != evidence_segment["id"]
+            ):
+                reason = (
+                    "Подпись перенесена с репрезентативной реплики "
+                    f"{source_label or segment['source_label']} "
+                    f"({_format_time(evidence_segment['start_ms'])})"
+                )
+            self.repository.set_attribution(
+                segment["id"],
+                aggregate["status"],
+                aggregate["speaker_label"],
+                aggregate["confidence"],
+                aggregate["highlight_bbox"],
+                aggregate["label_bbox"],
+                reason,
+                call_id,
+            )
+
+    def _mark_pending_unknown(self, run_id: str, reason: str) -> None:
+        for segment in self.repository.list_segments(run_id):
+            if segment["status"] == "pending":
+                self.repository.set_attribution(
+                    segment["id"], "unknown", None, None, reason=reason
+                )
+
     async def _analyze_with_profile(
         self,
         run: dict[str, Any],
@@ -187,6 +238,7 @@ class AttributionService:
         frame_paths: list[Path],
         api_key: str,
         profile: dict[str, Any],
+        unavailable_models: set[str],
     ) -> tuple[RouterAIResult, str]:
         provider_base_url = profile.get("provider_base_url")
         if provider_base_url:
@@ -198,6 +250,11 @@ class AttributionService:
             raise AttributionError("В профиле нет разрешенной модели")
         last_error: Exception | None = None
         for attempt, model in enumerate(dict.fromkeys(candidates), start=1):
+            if model in unavailable_models:
+                last_error = AttributionError(
+                    f"модель {model} отключена до конца запуска после несовместимого ответа"
+                )
+                continue
             call_id = self.admin_repository.create_call(
                 model,
                 len(frame_paths),
@@ -231,10 +288,18 @@ class AttributionService:
                 self.admin_repository.finish_call(
                     call_id,
                     status="outcome_unknown" if exc.outcome_unknown else "failed",
+                    actual_model=exc.actual_model,
+                    generation_id=exc.generation_id,
+                    provider_request_id=exc.provider_request_id,
                     error_code=str(exc.status_code or "routerai_error"),
                     error_message=str(exc)[:500],
+                    **exc.usage,
                 )
+                if exc.generation_id and not exc.usage.get("provider_cost"):
+                    await self._enrich_cost(call_id, api_key, exc.generation_id)
                 last_error = exc
+                if not exc.retryable and not exc.outcome_unknown:
+                    unavailable_models.add(model)
                 if exc.outcome_unknown:
                     break
         raise AttributionError(str(last_error or "Модель недоступна"))
@@ -361,6 +426,28 @@ def aggregate_frame_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         "label_bbox": best.get("label_bbox"),
         "reason": best.get("reason") or "Подпись подтверждена несколькими кадрами",
     }
+
+
+def _representative_segments(
+    segments: list[dict[str, Any]], limit: int = 3
+) -> list[dict[str, Any]]:
+    """Выбирает несколько самых длинных реплик одной голосовой метки."""
+    return sorted(
+        segments,
+        key=lambda item: (-(item["end_ms"] - item["start_ms"]), item["ordinal"]),
+    )[:limit]
+
+
+def _group_pending_segments(
+    segments: list[dict[str, Any]], *, precise: bool
+) -> dict[str, list[dict[str, Any]]]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for segment in segments:
+        if segment["status"] != "pending":
+            continue
+        key = segment["id"] if precise else segment["source_label"]
+        groups.setdefault(key, []).append(segment)
+    return groups
 
 
 def _normalize_label(value: str) -> str:

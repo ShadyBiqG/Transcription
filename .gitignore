@@ -16,6 +16,7 @@ deploy/windows-service/TranscriptionService.exe
 Thumbs.db
 .idea/
 .vscode/
+.playwright-cli/
 
 # AI agents and generated planning artifacts
 .agents/

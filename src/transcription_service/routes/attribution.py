@@ -31,6 +31,7 @@ def create_router(
                 job_id,
                 user.id,
                 payload.external_processing_consent,
+                payload.processing_mode.value,
                 payload.profile_id,
                 payload.budget_amount,
                 payload.budget_currency,

@@ -20,6 +20,7 @@ from .config import Settings
 from .database import JobRepository
 from .frames import FFmpegFrameExtractor
 from .models import (
+    AttributionRunSummary,
     AuthCredentials,
     HealthResponse,
     JobResponse,
@@ -236,13 +237,34 @@ def create_app(
         user: Annotated[User, Depends(current_user)],
         limit: int = Query(default=50, ge=1, le=100),
     ) -> list[JobResponse]:
-        return [_job_response(job) for job in service.list_jobs(limit, user.id)]
+        jobs = service.list_jobs(limit, user.id)
+        latest_runs = attribution_repository.latest_runs(
+            [job.id for job in jobs], user.id
+        )
+        saved_runs = attribution_repository.latest_runs(
+            [job.id for job in jobs], user.id, ready_only=True
+        )
+        return [
+            _job_response(
+                job,
+                _attribution_summary(latest_runs.get(job.id)),
+                _attribution_summary(saved_runs.get(job.id)),
+            )
+            for job in jobs
+        ]
 
     @app.get("/api/v1/jobs/{job_id}", response_model=JobResponse)
     async def get_job(
         job_id: str, user: Annotated[User, Depends(current_user)]
     ) -> JobResponse:
-        return _job_response(service.get_job(job_id, user.id))
+        job = service.get_job(job_id, user.id)
+        latest_run = attribution_repository.latest_runs([job.id], user.id).get(job.id)
+        saved_run = attribution_repository.latest_runs(
+            [job.id], user.id, ready_only=True
+        ).get(job.id)
+        return _job_response(
+            job, _attribution_summary(latest_run), _attribution_summary(saved_run)
+        )
 
     @app.get("/api/v1/jobs/{job_id}/transcript")
     async def download_transcript(
@@ -275,7 +297,11 @@ def create_app(
     return app
 
 
-def _job_response(job: TranscriptionJob) -> JobResponse:
+def _job_response(
+    job: TranscriptionJob,
+    latest_attribution: AttributionRunSummary | None = None,
+    saved_attribution: AttributionRunSummary | None = None,
+) -> JobResponse:
     base = f"/api/v1/jobs/{job.id}"
     return JobResponse(
         id=job.id,
@@ -293,6 +319,25 @@ def _job_response(job: TranscriptionJob) -> JobResponse:
         error_message=job.error_message,
         transcript_url=f"{base}/transcript" if job.status is JobStatus.COMPLETED else None,
         manifest_url=f"{base}/manifest",
+        latest_attribution=latest_attribution,
+        saved_attribution=saved_attribution,
+    )
+
+
+def _attribution_summary(run: dict | None) -> AttributionRunSummary | None:
+    if run is None:
+        return None
+    base = f"/api/v1/jobs/{run['job_id']}/attribution-runs/{run['id']}"
+    ready = run["status"] in {"completed", "blocked_budget"}
+    return AttributionRunSummary(
+        id=run["id"],
+        status=run["status"],
+        processing_mode=run["processing_mode"],
+        created_at=run["created_at"],
+        completed_at=run["completed_at"],
+        error_message=run["error_message"],
+        attributed_transcript_url=f"{base}/artifacts/html" if ready else None,
+        attribution_json_url=f"{base}/artifacts/json" if ready else None,
     )
 
 

@@ -5,11 +5,13 @@ import json
 import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from jsonschema import Draft202012Validator
 
 from tests.conftest import register_user
 from transcription_service.api import create_app
+from transcription_service.attribution_repository import AttributionRepository
 from transcription_service.database import JobRepository
 from transcription_service.frames import ExtractedFrame
 from transcription_service.models import UserRole
@@ -85,6 +87,35 @@ class FakeRouterAI:
 
     async def test_key(self, api_key):
         return True
+
+
+class IncompatiblePrimaryRouterAI(FakeRouterAI):
+    async def analyze_frames(self, api_key, model, frame_paths, session_id, max_attempts=1):
+        self.calls.append(model)
+        if model == "vendor/primary":
+            raise RouterAIError(
+                "response_format json_schema is not supported",
+                status_code=400,
+                retryable=False,
+            )
+        return RouterAIResult(
+            results=[
+                {
+                    "frame_index": index,
+                    "status": "detected",
+                    "speaker_label": "Гость",
+                    "confidence": 0.9,
+                    "highlight_bbox": [0.1, 0.1, 0.4, 0.4],
+                    "label_bbox": [0.1, 0.3, 0.2, 0.35],
+                    "reason": "зелёная рамка",
+                }
+                for index in range(len(frame_paths))
+            ],
+            model=model,
+            generation_id=None,
+            provider_request_id="fake-request",
+            usage={"input_units": 100, "output_units": 20, "total_units": 120},
+        )
 
 
 def test_attribution_without_external_consent_creates_unknown_artifact(
@@ -167,6 +198,8 @@ def test_external_flow_uses_allowed_fallback_and_records_every_call(
         ).json()
         path = f"/api/v1/jobs/{job['id']}/attribution-runs/{started['id']}"
         run = _wait(client, path, {"completed", "failed"})
+        persisted_job = client.get(f"/api/v1/jobs/{job['id']}").json()
+        persisted_list_item = client.get("/api/v1/jobs").json()[0]
         usage = client.get("/api/v1/admin/external-usage").json()
         filtered = client.get(
             "/api/v1/admin/external-usage",
@@ -175,8 +208,169 @@ def test_external_flow_uses_allowed_fallback_and_records_every_call(
 
     assert run["status"] == "completed"
     assert run["segments"][0]["speaker_label"] == "Гость"
+    assert persisted_job["latest_attribution"]["id"] == run["id"]
+    assert persisted_job["saved_attribution"]["id"] == run["id"]
+    assert persisted_list_item["saved_attribution"]["attributed_transcript_url"].endswith(
+        "/artifacts/html"
+    )
     assert routerai.calls == ["vendor/primary", "vendor/fallback"]
     assert usage["calls"] == 2
     assert usage["failed_calls"] == 1
     assert filtered["calls"] == 1
     assert filtered["items"][0]["actual_model"] == "vendor/fallback"
+
+
+@pytest.mark.parametrize(
+    ("processing_mode", "expected_calls"),
+    [("fast", 4), ("precise", 8)],
+)
+def test_attribution_processing_modes(
+    settings, fake_runner, processing_mode: str, expected_calls: int
+) -> None:
+    routerai = FakeRouterAI()
+    app = create_app(
+        settings,
+        fake_runner,
+        routerai=routerai,
+        frame_extractor=FakeExtractor(),
+    )
+    with TestClient(app) as client:
+        user = register_user(client, "admin@example.com")
+        JobRepository(settings.database_path).set_user_role(user["id"], UserRole.ADMIN)
+        client.patch(
+            "/api/v1/admin/settings",
+            json={
+                "api_key": "routerai-test-secret",
+                "provider_enabled": True,
+                "primary_model_id": "vendor/primary",
+                "fallback_model_id": "vendor/fallback",
+                "allowed_model_ids": ["vendor/primary", "vendor/fallback"],
+            },
+        )
+        created = client.post(
+            "/api/v1/jobs",
+            files={"file": ("meeting.webm", b"fake-webm", "video/webm")},
+        ).json()
+        job = _wait(client, f"/api/v1/jobs/{created['id']}", {"completed", "failed"})
+        transcript = settings.jobs_dir / job["id"] / "transcript.html"
+        transcript.write_text(
+            '<a name="ts_0_1000_S00">S00: Короткая реплика</a>'
+            '<a name="ts_1000_9000_S00">S00: Репрезентативная реплика</a>'
+            '<a name="ts_9000_13000_S00">S00: Средняя реплика</a>'
+            '<a name="ts_13000_16000_S01">S01: Другой говорящий</a>',
+            encoding="utf-8",
+        )
+
+        started = client.post(
+            f"/api/v1/jobs/{job['id']}/attribution-runs",
+            json={
+                "external_processing_consent": True,
+                "processing_mode": processing_mode,
+            },
+        ).json()
+        run = _wait(
+            client,
+            f"/api/v1/jobs/{job['id']}/attribution-runs/{started['id']}",
+            {"completed", "failed"},
+        )
+
+    assert run["status"] == "completed"
+    assert run["processing_mode"] == processing_mode
+    assert len(run["segments"]) == 4
+    assert {item["speaker_label"] for item in run["segments"]} == {"Гость"}
+    assert routerai.calls == ["vendor/primary", "vendor/fallback"] * (expected_calls // 2)
+
+
+def test_incompatible_model_is_not_retried_for_every_segment(
+    settings, fake_runner
+) -> None:
+    routerai = IncompatiblePrimaryRouterAI()
+    app = create_app(
+        settings,
+        fake_runner,
+        routerai=routerai,
+        frame_extractor=FakeExtractor(),
+    )
+    with TestClient(app) as client:
+        user = register_user(client, "admin@example.com")
+        JobRepository(settings.database_path).set_user_role(user["id"], UserRole.ADMIN)
+        client.patch(
+            "/api/v1/admin/settings",
+            json={
+                "api_key": "routerai-test-secret",
+                "provider_enabled": True,
+                "primary_model_id": "vendor/primary",
+                "fallback_model_id": "vendor/fallback",
+                "allowed_model_ids": ["vendor/primary", "vendor/fallback"],
+            },
+        )
+        created = client.post(
+            "/api/v1/jobs",
+            files={"file": ("meeting.webm", b"fake-webm", "video/webm")},
+        ).json()
+        job = _wait(client, f"/api/v1/jobs/{created['id']}", {"completed", "failed"})
+        transcript = settings.jobs_dir / job["id"] / "transcript.html"
+        transcript.write_text(
+            '<a name="ts_0_1000_S00">S00: Первая реплика</a>'
+            '<a name="ts_1000_2000_S01">S01: Вторая реплика</a>',
+            encoding="utf-8",
+        )
+        started = client.post(
+            f"/api/v1/jobs/{job['id']}/attribution-runs",
+            json={"external_processing_consent": True, "processing_mode": "precise"},
+        ).json()
+        run = _wait(
+            client,
+            f"/api/v1/jobs/{job['id']}/attribution-runs/{started['id']}",
+            {"completed", "failed"},
+        )
+
+    assert run["status"] == "completed"
+    assert routerai.calls == ["vendor/primary", "vendor/fallback", "vendor/fallback"]
+
+
+def test_interrupted_attribution_is_resumed_without_losing_completed_segments(
+    settings, fake_runner
+) -> None:
+    with TestClient(create_app(settings, fake_runner)) as client:
+        user = register_user(client)
+        created = client.post(
+            "/api/v1/jobs",
+            files={"file": ("meeting.webm", b"fake-webm", "video/webm")},
+        ).json()
+        job = _wait(client, f"/api/v1/jobs/{created['id']}", {"completed", "failed"})
+
+    repository = AttributionRepository(settings.database_path)
+    run = repository.create_run(
+        job["id"], user["id"], True, "precise", {}, None, "RUB"
+    )
+    repository.claim_next()
+    segment = repository.replace_segments(
+        run["id"],
+        [
+            {
+                "id": "00000000-0000-0000-0000-000000000101",
+                "ordinal": 0,
+                "source_anchor": "ts_0_1000_S00",
+                "source_label": "S00",
+                "start_ms": 0,
+                "end_ms": 1000,
+                "text": "Готовая реплика",
+            }
+        ],
+    )[0]
+    repository.set_attribution(segment["id"], "detected", "Гость", 0.9)
+    repository.finish(
+        run["id"],
+        "failed",
+        "service_restarted",
+        "Определение говорящих прервано перезапуском сервиса",
+    )
+
+    assert repository.recover_running() == 1
+    recovered = repository.get_run(run["id"])
+    recovered_segment = repository.list_segments(run["id"])[0]
+    assert recovered["status"] == "queued"
+    assert recovered["error_code"] is None
+    assert recovered_segment["status"] == "detected"
+    assert recovered_segment["speaker_label"] == "Гость"

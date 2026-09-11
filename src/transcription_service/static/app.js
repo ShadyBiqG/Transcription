@@ -114,20 +114,75 @@ function formatDateTime(value, fallback = "—") {
   }).format(date);
 }
 
+function formatTimecode(milliseconds) {
+  const totalSeconds = Math.max(0, Math.floor(Number(milliseconds || 0) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return `[${[hours, minutes, seconds].map((value) => String(value).padStart(2, "0")).join(":")}]`;
+}
+
+function attributionStatus(status) {
+  return ({ pending: "Ожидает", detected: "Определён", unknown: "Не определён", manual: "Исправлен" })[status] || status;
+}
+
+function attributionRunStatus(status) {
+  return ({ queued: "Ожидает", running: "ИИ обрабатывает", completed: "Готово", failed: "Ошибка", blocked_budget: "Достигнут лимит" })[status] || status;
+}
+
+function attributionModeLabel(mode) {
+  return mode === "precise" ? "Точный" : "Быстрый";
+}
+
 function renderJob(job) {
   const card = document.createElement("article");
   card.className = "job";
+  const run = attributionRuns.get(job.id);
+  const savedAttribution = job.saved_attribution;
+  const preferredTranscript = savedAttribution?.attributed_transcript_url || job.transcript_url;
   const downloads = job.status === "completed"
-    ? `<a data-open="${job.transcript_url}" href="#">Открыть транскрипцию</a>`
-      + `<a data-download="${job.transcript_url}" href="#">Скачать файл</a>`
+    ? `<a data-open="${preferredTranscript}" href="#">${savedAttribution ? "Открыть транскрипцию с подписями" : "Открыть транскрипцию"}</a>`
+      + `<a data-download="${preferredTranscript}" href="#">${savedAttribution ? "Скачать с подписями" : "Скачать файл"}</a>`
+      + (savedAttribution ? `<a data-open="${job.transcript_url}" href="#">Открыть исходную с S-метками</a>` : "")
     : "";
   const completedFallback = job.status === "running" ? "выполняется" : "—";
-  const run = attributionRuns.get(job.id);
+  const segments = run?.segments || [];
+  const processedSegments = segments.filter((segment) => segment.status !== "pending").length;
+  const detectedSegments = segments.filter((segment) => ["detected", "manual"].includes(segment.status)).length;
+  const unknownSegments = segments.filter((segment) => segment.status === "unknown").length;
+  const progress = segments.length ? Math.round((processedSegments / segments.length) * 100) : 0;
+  const attributionRunning = ["queued", "running"].includes(run?.status);
+  const attributionMode = run?.processing_mode || "fast";
+  const segmentRows = segments.map((segment) => `<tr>
+    <td class="timecode">${formatTimecode(segment.start_ms)}</td>
+    <td>${escapeHtml(segment.source_label)}</td>
+    <td>${escapeHtml(segment.manual_label || segment.speaker_label || "—")}</td>
+    <td>${escapeHtml(attributionStatus(segment.status))}</td>
+    <td><button class="secondary compact" data-segment="${segment.id}" data-run="${run.id}" data-job="${job.id}" type="button">Изменить</button></td>
+  </tr>`).join("");
   const attribution = job.status === "completed" ? `
-    <div class="attribution"><button data-attribution="${job.id}" type="button">Определить подписи по видео</button>
-    ${run ? `<span class="badge ${run.status}">${escapeHtml(run.status)}</span>` : ""}
-    ${run?.attributed_transcript_url ? `<a data-open="${run.attributed_transcript_url}" href="#">Результат с подписями</a>` : ""}</div>
-    ${run?.segments?.length ? `<div class="segments">${run.segments.map((segment) => `<button class="secondary" data-segment="${segment.id}" data-run="${run.id}" data-job="${job.id}" type="button">${escapeHtml(segment.manual_label || segment.speaker_label || "unknown")} · ${Math.floor(segment.start_ms / 1000)}с</button>`).join("")}</div>` : ""}` : "";
+    <section class="attribution-panel">
+      <div class="attribution-toolbar">
+        ${attributionRunning ? `<span class="mode-label">Режим: ${attributionModeLabel(attributionMode)}</span>` : `
+          <label class="attribution-mode">Режим
+            <select data-attribution-mode="${job.id}">
+              <option value="fast" ${attributionMode === "fast" ? "selected" : ""}>Быстрый — один раз для каждой S-метки</option>
+              <option value="precise" ${attributionMode === "precise" ? "selected" : ""}>Точный — анализ каждой реплики</option>
+            </select>
+          </label>
+          <button data-attribution="${job.id}" type="button">${run ? "Определить повторно" : "Определить говорящих"}</button>`}
+        ${run ? `<span class="badge ${run.status}">${escapeHtml(attributionRunStatus(run.status))}</span>` : ""}
+        ${run && !segments.length && !attributionRunning ? `<button class="secondary compact" data-load-attribution="${run.id}" data-job="${job.id}" type="button">Показать реплики</button>` : ""}
+      </div>
+      ${run?.error_message ? `<p class="attribution-error">${escapeHtml(run.error_message)}</p>` : ""}
+      ${segments.length ? `<div class="attribution-progress" aria-label="Обработано ${progress}%">
+        <div><strong>${processedSegments} из ${segments.length}</strong><span>Определено: ${detectedSegments} · Не определено: ${unknownSegments}</span></div>
+        <progress max="100" value="${progress}">${progress}%</progress>
+      </div>
+      <details class="segment-review"><summary>Реплики и ручная корректировка</summary>
+        <div class="table-wrap"><table><thead><tr><th>Время</th><th>Метка</th><th>Говорящий</th><th>Статус</th><th></th></tr></thead><tbody>${segmentRows}</tbody></table></div>
+      </details>` : ""}
+    </section>` : "";
   card.innerHTML = `
     <div><strong>${escapeHtml(job.original_filename)}</strong><span>${formatSize(job.size_bytes)}</span></div>
     <span class="badge ${job.status}">${job.status}</span>
@@ -139,6 +194,7 @@ function renderJob(job) {
     </div>
     ${attribution}<footer>${downloads}<a data-download="${job.manifest_url}" href="#">Manifest</a></footer>`;
   card.querySelector("[data-attribution]")?.addEventListener("click", () => startAttribution(job.id));
+  card.querySelector("[data-load-attribution]")?.addEventListener("click", (event) => pollAttribution(job.id, event.currentTarget.dataset.loadAttribution));
   card.querySelectorAll("[data-segment]").forEach((button) => button.addEventListener("click", () => editSpeaker(button)));
   card.querySelectorAll("[data-download]").forEach((link) => {
     link.addEventListener("click", async (event) => {
@@ -166,12 +222,16 @@ async function editSpeaker(button) {
 }
 
 async function startAttribution(jobId) {
-  const consent = window.confirm("Внешнему провайдеру будут отправлены только кадры видео. Аудио и текст не передаются. Продолжить?");
+  const mode = document.querySelector(`[data-attribution-mode="${jobId}"]`)?.value || "fast";
+  const modeDescription = mode === "precise"
+    ? "Точный режим анализирует каждую реплику и расходует больше времени и средств."
+    : "Быстрый режим определяет имя один раз для каждой метки S00/S01 и переносит его на все соответствующие реплики.";
+  const consent = window.confirm(`${modeDescription}\n\nВнешнему провайдеру будут отправлены только кадры видео. Аудио и текст не передаются. Продолжить?`);
   if (!consent) return;
   try {
     const response = await api(`/api/v1/jobs/${jobId}/attribution-runs`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ external_processing_consent: true }),
+      body: JSON.stringify({ external_processing_consent: true, processing_mode: mode }),
     });
     const run = await response.json();
     attributionRuns.set(jobId, run);
@@ -230,6 +290,16 @@ async function openTranscript(path) {
 async function refreshJobs() {
   try {
     const jobs = await (await api("/api/v1/jobs")).json();
+    jobs.forEach((job) => {
+      const saved = job.latest_attribution;
+      const current = attributionRuns.get(job.id);
+      if (!saved) return;
+      if (current?.id === saved.id && current.segments?.length) {
+        attributionRuns.set(job.id, { ...current, ...saved, segments: current.segments });
+      } else {
+        attributionRuns.set(job.id, { ...saved, segments: [] });
+      }
+    });
     jobsNode.replaceChildren(...jobs.map(renderJob));
     if (!jobs.length) jobsNode.textContent = "Заданий пока нет.";
   } catch (error) {
@@ -300,7 +370,11 @@ async function loadUsage() {
   catch (error) { node.textContent = `Не удалось загрузить расходы: ${error.message}`; return; }
   showMetrics("#usage-cards", { Вызовы: data.calls, Успешно: data.successful_calls, Ошибки: data.failed_calls, Кадры: data.images, "Стоимость, ₽": data.confirmed_cost });
   document.querySelector("#usage-table").innerHTML = usageByUserTable(data);
-  document.querySelector("#usage-details").innerHTML = data.items.length ? `<table><thead><tr><th>Время</th><th>Провайдер</th><th>Модель</th><th>Статус</th><th>Кадры</th><th>Стоимость</th></tr></thead><tbody>${data.items.map((item) => `<tr><td>${formatDateTime(item.created_at)}</td><td>${escapeHtml(item.provider)}</td><td>${escapeHtml(item.actual_model || item.requested_model)}</td><td>${escapeHtml(item.status)}</td><td>${item.image_count}</td><td>${item.provider_cost ?? "—"}</td></tr>`).join("")}</tbody></table>` : "Обращений нет.";
+  const reasons = data.failure_reasons || [];
+  const diagnostics = reasons.length ? `<div class="failure-summary"><h4>Зафиксированные причины ошибок</h4>${reasons.map((item) => `<details><summary>${item.calls} × ${escapeHtml(item.model)} — ${escapeHtml(item.error_summary || "Ошибка провайдера")}</summary><code>${escapeHtml(item.error_code || "без кода")}: ${escapeHtml(item.error_message || "Провайдер не сообщил подробности")}</code></details>`).join("")}</div>` : "";
+  const statuses = { completed: "успешно", failed: "ошибка", outcome_unknown: "результат неизвестен", started: "выполняется" };
+  const calls = data.items.length ? `<table><thead><tr><th>Время</th><th>Провайдер</th><th>Модель</th><th>Статус</th><th>Кадры</th><th>Причина</th><th>Стоимость</th></tr></thead><tbody>${data.items.map((item) => `<tr><td>${formatDateTime(item.created_at)}</td><td>${escapeHtml(item.provider)}</td><td>${escapeHtml(item.actual_model || item.requested_model)}</td><td>${escapeHtml(statuses[item.status] || item.status)}</td><td>${item.image_count}</td><td>${escapeHtml(item.error_summary || "—")}</td><td>${item.provider_cost ?? "—"}</td></tr>`).join("")}</tbody></table>` : "Обращений нет.";
+  document.querySelector("#usage-details").innerHTML = diagnostics + calls;
 }
 
 async function loadAdminSettings() {
@@ -317,6 +391,8 @@ async function loadAdminSettings() {
   document.querySelector("#primary-model").value = settings.primary_model_id;
   document.querySelector("#fallback-model").value = settings.fallback_model_id;
   document.querySelector("#allowed-models").value = settings.allowed_model_ids.join("\n");
+  document.querySelector("#apply-recommended-models").dataset.primary = settings.recommended_primary_model_id;
+  document.querySelector("#apply-recommended-models").dataset.fallback = settings.recommended_fallback_model_id;
   message.textContent = catalog.stale ? `Список моделей недоступен: ${catalog.last_error || "ошибка провайдера"}. Введите идентификаторы моделей вручную.` : catalog.models.length ? `Список моделей получен: ${formatDateTime(catalog.fetched_at)}. Можно выбрать вариант или ввести свой.` : "Список моделей пуст. Введите идентификаторы моделей вручную.";
 }
 
@@ -329,6 +405,17 @@ document.querySelector("#admin-form").addEventListener("submit", async (event) =
 });
 
 document.querySelector("#refresh-catalog").addEventListener("click", async () => { try { await api("/api/v1/admin/models/refresh", { method: "POST" }); await loadAdminSettings(); } catch (error) { document.querySelector("#admin-message").textContent = `${error.message} Введите модели вручную.`; } });
+document.querySelector("#apply-recommended-models").addEventListener("click", (event) => {
+  const primary = event.currentTarget.dataset.primary;
+  const fallback = event.currentTarget.dataset.fallback;
+  if (!primary || !fallback) return;
+  document.querySelector("#primary-model").value = primary;
+  document.querySelector("#fallback-model").value = fallback;
+  const allowed = document.querySelector("#allowed-models");
+  const models = allowed.value.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean);
+  allowed.value = [...new Set([primary, fallback, ...models])].join("\n");
+  document.querySelector("#admin-message").textContent = "Рекомендуемые модели подставлены. Сохраните настройки и выполните проверку.";
+});
 document.querySelector("#test-routerai").addEventListener("click", async () => { try { const data = await (await api("/api/v1/admin/settings/test", { method: "POST" })).json(); document.querySelector("#admin-message").textContent = data.ok ? "Провайдер и модель доступны" : "API-ключ не настроен или отклонён"; } catch (error) { document.querySelector("#admin-message").textContent = `Проверка не пройдена: ${error.message}`; } });
 document.querySelectorAll("[data-admin-refresh]").forEach((node) => node.addEventListener("click", () => node.dataset.adminRefresh === "overview" ? loadOverview() : loadUsage()));
 document.querySelector("#refresh-personal-usage").addEventListener("click", loadPersonalUsage);

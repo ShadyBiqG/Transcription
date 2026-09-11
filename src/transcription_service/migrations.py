@@ -174,7 +174,18 @@ def _stage2_schema(connection: sqlite3.Connection) -> None:
     )
 
 
-MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = ((1, _stage2_schema),)
+def _attribution_processing_mode(connection: sqlite3.Connection) -> None:
+    if "processing_mode" not in _columns(connection, "attribution_runs"):
+        connection.execute(
+            "ALTER TABLE attribution_runs ADD COLUMN processing_mode TEXT NOT NULL "
+            "DEFAULT 'precise' CHECK(processing_mode IN ('fast','precise'))"
+        )
+
+
+MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
+    (1, _stage2_schema),
+    (2, _attribution_processing_mode),
+)
 
 
 def apply_migrations(connection: sqlite3.Connection) -> None:

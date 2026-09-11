@@ -18,6 +18,18 @@ def test_health_contract(settings, fake_runner):
     }
 
 
+def test_attribution_modes_are_declared_in_openapi(settings, fake_runner):
+    with TestClient(create_app(settings, fake_runner, start_worker=False)) as client:
+        schema = client.get("/openapi.json").json()
+
+    request = schema["components"]["schemas"]["StartAttributionRequest"]
+    mode_reference = request["properties"]["processing_mode"]["$ref"]
+    mode_name = mode_reference.rsplit("/", 1)[-1]
+    mode = schema["components"]["schemas"][mode_name]
+    assert mode["enum"] == ["fast", "precise"]
+    assert request["properties"]["processing_mode"]["default"] == "fast"
+
+
 def test_upload_contract_returns_accepted_job(settings, fake_runner):
     with TestClient(create_app(settings, fake_runner, start_worker=False)) as client:
         register_user(client)
@@ -36,6 +48,8 @@ def test_upload_contract_returns_accepted_job(settings, fake_runner):
     assert body["completed_at"] is None
     assert body["transcript_url"] is None
     assert body["manifest_url"].endswith("/manifest")
+    assert body["latest_attribution"] is None
+    assert body["saved_attribution"] is None
 
 
 def test_upload_rejects_invalid_extension_and_empty_file(settings, fake_runner):

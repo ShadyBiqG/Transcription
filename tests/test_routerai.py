@@ -41,6 +41,9 @@ def test_routerai_sends_images_without_transcript_text(tmp_path) -> None:
         serialized = json.dumps(payload, ensure_ascii=False)
         assert "Тестовая реплика" not in serialized
         assert "data:image/jpeg;base64" in serialized
+        assert "Осмотри ВЕСЬ кадр" in serialized
+        assert "Кадр 0:" in serialized
+        assert "зелёные элементы внутри демонстрируемого приложения" in serialized
         return httpx.Response(
             200,
             json={
@@ -67,7 +70,11 @@ def test_routerai_sends_images_without_transcript_text(tmp_path) -> None:
                         }
                     }
                 ],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "cost_rub": 0.0123,
+                },
             },
         )
 
@@ -75,6 +82,8 @@ def test_routerai_sends_images_without_transcript_text(tmp_path) -> None:
     result = asyncio.run(client.analyze_frames("secret", "vendor/vision", [frame], "test"))
     assert result.results[0]["speaker_label"] == "Гость"
     assert result.usage["input_units"] == 10
+    assert result.usage["provider_cost"] == "0.0123"
+    assert result.usage["currency"] == "RUB"
 
 
 @pytest.mark.parametrize(
@@ -114,3 +123,55 @@ def test_routerai_read_timeout_is_outcome_unknown(tmp_path) -> None:
     with pytest.raises(RouterAIError) as caught:
         asyncio.run(client.analyze_frames("secret", "vendor/vision", [frame], "test"))
     assert caught.value.outcome_unknown is True
+
+
+def test_paid_invalid_response_keeps_usage_and_generation_id(tmp_path) -> None:
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"jpeg")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": "gen_paid_invalid",
+                "model": "vendor/vision",
+                "choices": [{"message": {"content": "не JSON"}}],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 20,
+                    "cost_rub": 0.25,
+                },
+            },
+        )
+
+    client = RouterAIClient(
+        "https://router.test/api/v1", transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(RouterAIError) as caught:
+        asyncio.run(client.analyze_frames("secret", "vendor/vision", [frame], "test"))
+
+    assert caught.value.generation_id == "gen_paid_invalid"
+    assert caught.value.actual_model == "vendor/vision"
+    assert caught.value.usage["provider_cost"] == "0.25"
+
+
+def test_polza_generation_history_is_used_as_cost_fallback() -> None:
+    requested_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_paths.append(request.url.path)
+        if request.url.path.endswith("/generation"):
+            return httpx.Response(404)
+        return httpx.Response(
+            200,
+            json={"clientCost": "0.42", "finalEndpointSlug": "google"},
+        )
+
+    client = RouterAIClient(
+        "https://polza.test/api/v1", transport=httpx.MockTransport(handler)
+    )
+    generation = asyncio.run(client.fetch_generation("secret", "gen_123"))
+
+    assert requested_paths[-1].endswith("/history/generations/gen_123")
+    assert generation["total_cost"] == "0.42"
+    assert generation["provider"] == "google"

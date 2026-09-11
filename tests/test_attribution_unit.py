@@ -1,6 +1,10 @@
 from pathlib import Path
 
-from transcription_service.attribution_service import aggregate_frame_results
+from transcription_service.attribution_service import (
+    _group_pending_segments,
+    _representative_segments,
+    aggregate_frame_results,
+)
 from transcription_service.frames import choose_frame_times
 from transcription_service.transcript_parser import parse_noscribe_html
 
@@ -47,3 +51,31 @@ def test_aggregate_marks_conflicting_frames_unknown() -> None:
         ]
     )
     assert result["status"] == "unknown"
+
+
+def test_representative_segments_prefer_longest_utterances() -> None:
+    segments = [
+        {"id": "short", "ordinal": 0, "start_ms": 0, "end_ms": 1000},
+        {"id": "long-late", "ordinal": 2, "start_ms": 2000, "end_ms": 9000},
+        {"id": "long-early", "ordinal": 1, "start_ms": 1000, "end_ms": 8000},
+        {"id": "medium", "ordinal": 3, "start_ms": 9000, "end_ms": 13000},
+    ]
+
+    selected = _representative_segments(segments, limit=3)
+
+    assert [item["id"] for item in selected] == ["long-early", "long-late", "medium"]
+
+
+def test_processing_modes_group_by_voice_or_segment() -> None:
+    segments = [
+        {"id": "one", "source_label": "S00", "status": "pending"},
+        {"id": "two", "source_label": "S00", "status": "pending"},
+        {"id": "done", "source_label": "S01", "status": "detected"},
+    ]
+
+    fast = _group_pending_segments(segments, precise=False)
+    precise = _group_pending_segments(segments, precise=True)
+
+    assert list(fast) == ["S00"]
+    assert [item["id"] for item in fast["S00"]] == ["one", "two"]
+    assert list(precise) == ["one", "two"]

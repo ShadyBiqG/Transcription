@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime
 
 import pytest
@@ -70,3 +71,30 @@ def test_initialize_migrates_existing_database_with_speaker_detection(tmp_path):
     migrated = repository.get("00000000-0000-0000-0000-000000000001")
     assert migrated is not None
     assert migrated.speaker_detection == "none"
+
+
+def test_initialize_adds_processing_mode_to_existing_attribution_runs(tmp_path):
+    database_path = tmp_path / "jobs.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "CREATE TABLE schema_migrations "
+            "(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (1, 'test')"
+        )
+        connection.execute("CREATE TABLE attribution_runs (id TEXT PRIMARY KEY)")
+
+    repository = JobRepository(database_path)
+    repository.initialize()
+
+    with repository._connect() as connection:
+        columns = {
+            row["name"]: row
+            for row in connection.execute("PRAGMA table_info(attribution_runs)")
+        }
+        versions = {
+            row[0] for row in connection.execute("SELECT version FROM schema_migrations")
+        }
+    assert columns["processing_mode"]["dflt_value"] == "'precise'"
+    assert versions == {1, 2}

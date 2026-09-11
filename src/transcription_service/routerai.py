@@ -41,7 +41,10 @@ VISION_SCHEMA: dict[str, Any] = {
                                 "ambiguous",
                             ]
                         },
-                        "speaker_label": {"type": ["string", "null"]},
+                        "speaker_label": {
+                            "type": ["string", "null"],
+                            "maxLength": 120,
+                        },
                         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                         "highlight_bbox": {
                             "type": ["array", "null"],
@@ -55,13 +58,40 @@ VISION_SCHEMA: dict[str, Any] = {
                             "minItems": 4,
                             "maxItems": 4,
                         },
-                        "reason": {"type": "string"},
+                        "reason": {"type": "string", "maxLength": 200},
                     },
                 },
             }
         },
     },
 }
+
+SPEAKER_ATTRIBUTION_PROMPT = """\
+Определи подпись активного говорящего отдельно на каждом кадре.
+
+Алгоритм для каждого кадра:
+1. Осмотри ВЕСЬ кадр. Найди плитку участника (видео или аватар), которую интерфейс
+   конференции выделяет зелёной рамкой или зелёным контуром.
+2. При демонстрации экрана плитка может находиться в узкой верхней или боковой панели.
+   Без демонстрации она может быть крупной плиткой или частью галереи.
+3. Не считай выделением зелёные элементы внутри демонстрируемого приложения, текста,
+   презентации, панели задач и кнопок интерфейса. Рамка должна относиться к плитке
+   участника.
+4. Прочитай подпись, визуально принадлежащую именно выделенной плитке. Верни её
+   дословно, сохранив кириллицу, регистр и роль вроде «Гость». Не определяй человека
+   по лицу, голосу или другим кадрам и не дополняй обрезанную подпись.
+
+Статусы:
+- detected — выделена ровно одна плитка и её подпись читается;
+- no_highlight — надёжной зелёной рамки плитки нет;
+- label_unreadable — плитка найдена, но подпись нельзя прочитать дословно;
+- ambiguous — подходят несколько плиток или непонятно, к какой плитке относится рамка.
+
+speaker_label заполняй только для detected, иначе null. Координаты bbox указывай как
+[left, top, right, bottom] в долях размера полного кадра от 0 до 1; если область нельзя
+надёжно указать — null. reason — одна короткая проверяемая причина без рассуждений.
+Верни ровно по одному результату для каждого кадра, сохрани номера и порядок кадров.
+"""
 
 
 class RouterAIError(RuntimeError):
@@ -72,11 +102,19 @@ class RouterAIError(RuntimeError):
         status_code: int | None = None,
         retryable: bool = False,
         outcome_unknown: bool = False,
+        actual_model: str | None = None,
+        generation_id: str | None = None,
+        provider_request_id: str | None = None,
+        usage: dict[str, int | str | None] | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.retryable = retryable
         self.outcome_unknown = outcome_unknown
+        self.actual_model = actual_model
+        self.generation_id = generation_id
+        self.provider_request_id = provider_request_id
+        self.usage = usage or {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,7 +123,7 @@ class RouterAIResult:
     model: str
     generation_id: str | None
     provider_request_id: str | None
-    usage: dict[str, int | None]
+    usage: dict[str, int | str | None]
     service_tier: str | None = None
 
 
@@ -148,15 +186,14 @@ class RouterAIClient:
             {
                 "type": "text",
                 "text": (
-                    "Для каждого кадра найди участника, выделенного зеленой рамкой, и "
-                    "дословно прочитай видимую подпись. Анализируй весь кадр: при демонстрации "
-                    "говорящий может быть в панели, без демонстрации — на главном экране. "
-                    "Не определяй личность по лицу и не додумывай обрезанную подпись."
+                    f"{SPEAKER_ATTRIBUTION_PROMPT}\n"
+                    f"Количество кадров в запросе: {len(frame_paths)}."
                 ),
             }
         ]
-        for path in frame_paths:
+        for index, path in enumerate(frame_paths):
             encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+            content.append({"type": "text", "text": f"Кадр {index}:"})
             content.append(
                 {
                     "type": "image_url",
@@ -205,14 +242,23 @@ class RouterAIClient:
                 raise last_error
 
             body = response.json()
-            results = _parse_results(body, len(frame_paths))
             usage = _normalize_usage(body.get("usage") or {})
             generation_id = response.headers.get("X-Generation-Id") or body.get("id")
+            provider_request_id = body.get("id")
+            actual_model = str(body.get("model") or model)
+            try:
+                results = _parse_results(body, len(frame_paths))
+            except RouterAIError as exc:
+                exc.actual_model = actual_model
+                exc.generation_id = generation_id
+                exc.provider_request_id = provider_request_id
+                exc.usage = usage
+                raise
             return RouterAIResult(
                 results=results,
-                model=str(body.get("model") or model),
+                model=actual_model,
                 generation_id=generation_id,
-                provider_request_id=body.get("id"),
+                provider_request_id=provider_request_id,
                 usage=usage,
                 service_tier=body.get("service_tier"),
             )
@@ -226,11 +272,23 @@ class RouterAIClient:
                 params={"id": generation_id},
                 headers={"Authorization": f"Bearer {api_key}"},
             )
-        if response.status_code == 404:
+            if response.status_code in {404, 405}:
+                response = await client.get(
+                    f"/history/generations/{generation_id}",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+        if response.status_code in {404, 405}:
             return None
         response.raise_for_status()
         body = response.json()
-        return body.get("data", body)
+        generation = body.get("data", body)
+        if not isinstance(generation, dict):
+            return None
+        if generation.get("total_cost") is None:
+            generation["total_cost"] = generation.get("clientCost", generation.get("cost"))
+        if generation.get("provider") is None:
+            generation["provider"] = generation.get("finalEndpointSlug")
+        return generation
 
 
 def _safe_error(response: httpx.Response) -> str:
@@ -247,15 +305,23 @@ def _safe_error(response: httpx.Response) -> str:
     return f"RouterAI вернул HTTP {response.status_code}"
 
 
-def _normalize_usage(usage: dict[str, Any]) -> dict[str, int | None]:
+def _normalize_usage(usage: dict[str, Any]) -> dict[str, int | str | None]:
     input_units = usage.get("input_tokens", usage.get("prompt_tokens"))
     output_units = usage.get("output_tokens", usage.get("completion_tokens"))
     total_units = usage.get("total_tokens")
-    return {
+    normalized: dict[str, int | str | None] = {
         "input_units": int(input_units) if input_units is not None else None,
         "output_units": int(output_units) if output_units is not None else None,
         "total_units": int(total_units) if total_units is not None else None,
     }
+    cost_rub = usage.get("cost_rub")
+    if cost_rub is not None:
+        normalized.update(
+            provider_cost=str(cost_rub),
+            currency="RUB",
+            cost_source="provider_response",
+        )
+    return normalized
 
 
 def _parse_results(body: dict[str, Any], frame_count: int) -> list[dict[str, Any]]:

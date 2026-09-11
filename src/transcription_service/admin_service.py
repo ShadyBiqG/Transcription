@@ -5,11 +5,11 @@ from pathlib import Path
 from typing import Any
 
 from .admin_repository import AdminRepository
-from .routerai import RouterAIClient
+from .routerai import RouterAIClient, RouterAIError
 from .secrets import mask_secret, protect_secret, unprotect_secret
 
-DEFAULT_PRIMARY_MODEL = "google/gemini-3.1-flash-lite"
-DEFAULT_FALLBACK_MODEL = "qwen/qwen3.8-27b"
+DEFAULT_PRIMARY_MODEL = "mistralai/mistral-small-3.2-24b-instruct"
+DEFAULT_FALLBACK_MODEL = "google/gemini-2.5-flash-lite"
 
 
 class AdminService:
@@ -34,6 +34,8 @@ class AdminService:
             "global_budget": None,
             "default_job_budget": None,
             "currency": "RUB",
+            "recommended_primary_model_id": DEFAULT_PRIMARY_MODEL,
+            "recommended_fallback_model_id": DEFAULT_FALLBACK_MODEL,
             **self.repository.get_settings(),
         }
         credential = self.repository.get_credential("external")
@@ -167,9 +169,40 @@ class AdminService:
             result = await self.routerai.analyze_frames(
                 key, model, [frame], f"admin-test:{call_id}", max_attempts=1
             )
+        except RouterAIError as exc:
+            self.repository.finish_call(
+                call_id,
+                status="outcome_unknown" if exc.outcome_unknown else "failed",
+                actual_model=exc.actual_model,
+                generation_id=exc.generation_id,
+                provider_request_id=exc.provider_request_id,
+                error_code=str(exc.status_code or "routerai_error"),
+                error_message=str(exc)[:500],
+                **exc.usage,
+            )
+            if exc.generation_id and not exc.usage.get("provider_cost"):
+                try:
+                    generation = await self.routerai.fetch_generation(
+                        key, exc.generation_id
+                    )
+                except Exception:
+                    generation = None
+                if generation and generation.get("total_cost") is not None:
+                    self.repository.finish_call(
+                        call_id,
+                        actual_provider=generation.get("provider"),
+                        provider_cost=str(generation["total_cost"]),
+                        currency="RUB",
+                        cost_source="provider",
+                    )
+            self.repository.mark_credential_check(provider_key, False)
+            raise
         except Exception as exc:
             self.repository.finish_call(
-                call_id, status="failed", error_message=str(exc)[:500]
+                call_id,
+                status="failed",
+                error_code="client_error",
+                error_message=str(exc)[:500],
             )
             self.repository.mark_credential_check(provider_key, False)
             raise

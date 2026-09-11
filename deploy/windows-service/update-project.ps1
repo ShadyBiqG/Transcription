@@ -14,7 +14,9 @@ $ProjectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $ProgramDataDirectory = [Environment]::GetFolderPath(
     [Environment+SpecialFolder]::CommonApplicationData
 )
-$LogDirectory = Join-Path $ProgramDataDirectory "LocalTranscriptionService\update-logs"
+$StateDirectory = Join-Path $ProgramDataDirectory "LocalTranscriptionService"
+$LogDirectory = Join-Path $StateDirectory "update-logs"
+$DeployedCommitPath = Join-Path $StateDirectory "deployed-commit.txt"
 $Timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $LogPath = Join-Path $LogDirectory "update-$Timestamp.log"
 $LockPath = Join-Path $env:TEMP "LocalTranscriptionService-update.lock"
@@ -220,10 +222,30 @@ try {
     }
 
     $RemoteCommit = (& git.exe -C $ProjectRoot rev-parse $Upstream).Trim()
-    if ($OldCommit -eq $RemoteCommit -and -not $ForceSync) {
+    $DeployedCommit = $null
+    if (Test-Path -LiteralPath $DeployedCommitPath -PathType Leaf) {
+        $DeployedCommit = (Get-Content -LiteralPath $DeployedCommitPath -Raw).Trim()
+    }
+    $DeployedCommitDisplay = if ($DeployedCommit) {
+        $DeployedCommit
+    }
+    else {
+        "не зафиксирован"
+    }
+    Write-Host "Развёрнутый commit: $DeployedCommitDisplay"
+    if (
+        $OldCommit -eq $RemoteCommit -and
+        $DeployedCommit -eq $OldCommit -and
+        -not $ForceSync
+    ) {
         Write-Step "Новых commits нет"
+        Write-Host "Служба уже синхронизирована с commit $OldCommit"
         Write-Host "Для принудительной синхронизации зависимостей используйте: update-project.cmd -ForceSync"
         return
+    }
+    if ($OldCommit -eq $RemoteCommit -and -not $ForceSync) {
+        Write-Step "Код уже загружен, но служба с ним ещё не синхронизирована"
+        Write-Host "Будут выполнены резервное копирование, проверки и перезапуск службы."
     }
 
     $DataDirectory = Get-DataDirectory
@@ -321,9 +343,12 @@ try {
     }
 
     $NewCommit = (& git.exe -C $ProjectRoot rev-parse HEAD).Trim()
+    New-Item -ItemType Directory -Path $StateDirectory -Force | Out-Null
+    Set-Content -LiteralPath $DeployedCommitPath -Value $NewCommit -Encoding ASCII
     Write-Step "Обновление успешно завершено"
     Write-Host "Было:  $OldCommit"
     Write-Host "Стало: $NewCommit"
+    Write-Host "Развёрнутая версия: $DeployedCommitPath"
     Write-Host "Backup: $BackupDirectory"
 }
 catch {

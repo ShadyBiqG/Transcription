@@ -15,6 +15,44 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _external_error_diagnostic(
+    error_code: str | None, error_message: str | None, status: str
+) -> tuple[str | None, str | None]:
+    if status not in {"failed", "outcome_unknown"}:
+        return None, None
+    code = (error_code or "").strip().lower()
+    message = (error_message or "").strip()
+    text = message.lower()
+    if status == "outcome_unknown" or "timeout" in text or "истекло ожидание" in text:
+        return "timeout", "Превышено время ожидания; итог вызова неизвестен"
+    if code in {"401", "403"}:
+        return "authorization", "Провайдер отклонил API-ключ или доступ к модели"
+    if code == "402" or "insufficient" in text or "balance" in text:
+        return "balance", "Недостаточно средств или исчерпан лимит провайдера"
+    if code == "404":
+        return "model_not_found", "Модель или адрес API не найдены у провайдера"
+    if code == "429":
+        return "rate_limit", "Превышен лимит частоты запросов провайдера"
+    if code in {"500", "502", "503", "504"}:
+        return "provider_unavailable", "Временная ошибка на стороне провайдера"
+    if any(word in text for word in ("response_format", "json_schema", "structured")):
+        return "structured_output", "Модель не поддерживает требуемый структурированный ответ"
+    if any(word in text for word in ("image", "vision", "modality")):
+        return "vision", "Модель не приняла изображение или не поддерживает vision-вход"
+    if any(
+        word in text
+        for word in (
+            "json",
+            "пустой ответ",
+            "число результатов",
+            "frame_index",
+            "speaker_label",
+        )
+    ):
+        return "invalid_response", "Модель вернула ответ в неподходящем формате"
+    return "provider_error", message or "Провайдер не сообщил причину ошибки"
+
+
 class AdminRepository:
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
@@ -147,9 +185,16 @@ class AdminRepository:
             )
             for model in models:
                 architecture = model.get("architecture") or {}
+                top_provider = model.get("top_provider") or {}
                 inputs = architecture.get("input_modalities") or []
                 outputs = architecture.get("output_modalities") or []
-                parameters = model.get("supported_parameters") or []
+                parameters = (
+                    model.get("supported_parameters")
+                    or top_provider.get("supported_parameters")
+                    or []
+                )
+                pricing = model.get("pricing") or top_provider.get("pricing") or {}
+                pricing_units = model.get("pricing_units") or {}
                 metadata_available = bool(inputs or outputs or parameters)
                 compatible = not metadata_available or (
                     "image" in inputs
@@ -179,8 +224,8 @@ class AdminRepository:
                         json.dumps(parameters),
                         json.dumps(
                             {
-                                "pricing": model.get("pricing") or {},
-                                "pricing_units": model.get("pricing_units") or {},
+                                "pricing": pricing,
+                                "pricing_units": pricing_units,
                             }
                         ),
                         int(compatible),
@@ -363,13 +408,41 @@ class AdminRepository:
                 """,  # noqa: S608
                 parameters,
             ).fetchall()
+            failure_rows = connection.execute(
+                f"""
+                SELECT COALESCE(actual_model, requested_model) AS model,
+                    status, error_code, error_message, COUNT(*) AS calls
+                FROM external_model_calls
+                WHERE {where} AND status IN ('failed', 'outcome_unknown')
+                GROUP BY COALESCE(actual_model, requested_model), status,
+                    error_code, error_message
+                ORDER BY calls DESC, model
+                LIMIT 50
+                """,  # noqa: S608
+                parameters,
+            ).fetchall()
         items = [dict(row) for row in rows]
+        for item in items:
+            category, summary = _external_error_diagnostic(
+                item.get("error_code"), item.get("error_message"), item["status"]
+            )
+            item["error_category"] = category
+            item["error_summary"] = summary
         by_user = []
         for row in grouped_rows:
             item = dict(row)
             item["confirmed_cost"] = str(Decimal(str(item["confirmed_cost"])))
             item["estimated_cost"] = str(Decimal(str(item["estimated_cost"])))
             by_user.append(item)
+        failure_reasons = []
+        for row in failure_rows:
+            item = dict(row)
+            category, summary = _external_error_diagnostic(
+                item.get("error_code"), item.get("error_message"), item["status"]
+            )
+            item["error_category"] = category
+            item["error_summary"] = summary
+            failure_reasons.append(item)
         return {
             **dict(totals),
             "confirmed_cost": str(Decimal(str(totals["confirmed_cost"]))),
@@ -377,6 +450,7 @@ class AdminRepository:
             "currency": "RUB",
             "items": items,
             "by_user": by_user,
+            "failure_reasons": failure_reasons,
             "updated_at": _now(),
         }
 
