@@ -44,6 +44,7 @@ def test_routerai_sends_images_without_transcript_text(tmp_path) -> None:
         assert "Осмотри ВЕСЬ кадр" in serialized
         assert "Кадр 0:" in serialized
         assert "зелёные элементы внутри демонстрируемого приложения" in serialized
+        assert payload["max_tokens"] == 850
         return httpx.Response(
             200,
             json={

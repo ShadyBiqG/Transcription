@@ -35,6 +35,7 @@ def create_router(
                 payload.profile_id,
                 payload.budget_amount,
                 payload.budget_currency,
+                payload.source_run_id,
             )
         except AttributionError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -77,7 +78,16 @@ def create_router(
         segments = {item["id"]: item for item in repository.list_segments(run_id)}
         if segment_id not in segments:
             raise HTTPException(status_code=404, detail="Сегмент не найден")
-        repository.set_manual_label(segment_id, user.id, payload.speaker_label)
+        selected = segments[segment_id]
+        if run["processing_mode"] == "fast":
+            segment_ids = [
+                item["id"]
+                for item in segments.values()
+                if item["source_label"] == selected["source_label"]
+            ]
+        else:
+            segment_ids = [segment_id]
+        repository.set_manual_labels(segment_ids, user.id, payload.speaker_label)
         service.publish_artifacts(run_id)
         return next(item for item in repository.list_segments(run_id) if item["id"] == segment_id)
 

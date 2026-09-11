@@ -52,6 +52,7 @@ class AttributionService:
         profile_id: str,
         budget_amount: str | None,
         budget_currency: str,
+        source_run_id: str | None = None,
     ) -> dict[str, Any]:
         job = self.jobs.get(job_id, user_id)
         if job is None:
@@ -62,7 +63,7 @@ class AttributionService:
         if not (directory / "transcript.html").is_file():
             raise AttributionError("HTML-транскрипт не найден")
         profile = self.admin_service.profile_snapshot(profile_id)
-        return self.repository.create_run(
+        run = self.repository.create_run(
             job_id,
             user_id,
             consent,
@@ -71,6 +72,65 @@ class AttributionService:
             budget_amount,
             budget_currency,
         )
+        if not consent:
+            self._prepare_manual_run(run, job_dir=directory, source_run_id=source_run_id)
+            return self.repository.get_run(run["id"])
+        return run
+
+    def _prepare_manual_run(
+        self, run: dict[str, Any], *, job_dir: Path, source_run_id: str | None
+    ) -> None:
+        try:
+            parsed = parse_noscribe_html(job_dir / "transcript.html")
+            segments = self.repository.replace_segments(
+                run["id"],
+                [
+                    {
+                        "id": item.id,
+                        "ordinal": item.ordinal,
+                        "source_anchor": item.source_anchor,
+                        "source_label": item.source_label,
+                        "start_ms": item.start_ms,
+                        "end_ms": item.end_ms,
+                        "text": item.text,
+                    }
+                    for item in parsed
+                ],
+            )
+            inherited: dict[str, str] = {}
+            if source_run_id:
+                source_run = self.repository.get_run(source_run_id, run["user_id"])
+                if source_run["job_id"] != run["job_id"]:
+                    raise AttributionError("Исходная корректировка относится к другому заданию")
+                inherited = {
+                    item["source_anchor"]: item.get("manual_label")
+                    or item.get("speaker_label")
+                    for item in self.repository.list_segments(source_run_id)
+                    if item.get("manual_label") or item.get("speaker_label")
+                }
+            for segment in segments:
+                label = inherited.get(segment["source_anchor"])
+                if label:
+                    self.repository.set_manual_label(
+                        segment["id"],
+                        run["user_id"],
+                        label,
+                        reason="Перенесено из предыдущего результата",
+                    )
+                else:
+                    self.repository.set_attribution(
+                        segment["id"],
+                        "unknown",
+                        None,
+                        None,
+                        reason="Ожидает ручной корректировки",
+                    )
+            self.repository.finish(run["id"], "completed")
+            self.publish_artifacts(run["id"])
+        except Exception as exc:
+            self.repository.finish(
+                run["id"], "failed", "manual_setup_failed", str(exc)[:500]
+            )
 
     async def process_run(self, run: dict[str, Any]) -> None:
         run_id = run["id"]
@@ -408,8 +468,9 @@ def aggregate_frame_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         return _unknown("Зеленая рамка или подпись не определена")
     counts = Counter(normalized)
     winner, count = counts.most_common(1)[0]
-    required = 1 if len(results) == 1 else 2
-    if count < required or (len(counts) > 1 and counts.most_common(2)[1][1] == count):
+    conflicting = len(counts) > 1
+    tied = conflicting and counts.most_common(2)[1][1] == count
+    if tied or (conflicting and count < 2):
         return _unknown("Кадры дают противоречивые подписи")
     winner_items = [
         item
@@ -417,6 +478,8 @@ def aggregate_frame_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         if _normalize_label(str(item.get("speaker_label") or "")) == winner
     ]
     best = max(winner_items, key=lambda item: float(item.get("confidence") or 0))
+    if count == 1 and len(results) > 1 and float(best.get("confidence") or 0) < 0.8:
+        return _unknown("Подпись найдена только на одном кадре с низкой уверенностью")
     display = " ".join(str(best["speaker_label"]).split())
     return {
         "status": "detected",

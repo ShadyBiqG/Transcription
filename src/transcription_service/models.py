@@ -123,6 +123,7 @@ class User(BaseModel):
 class StartAttributionRequest(BaseModel):
     external_processing_consent: bool
     processing_mode: AttributionMode = AttributionMode.FAST
+    source_run_id: str | None = Field(default=None, max_length=100)
     profile_id: str = "balanced"
     budget_amount: str | None = Field(default=None, pattern=r"^\d+(?:\.\d+)?$")
     budget_currency: str = Field(default="RUB", min_length=3, max_length=3)

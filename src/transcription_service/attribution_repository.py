@@ -333,19 +333,44 @@ class AttributionRepository:
                 ),
             )
 
-    def set_manual_label(self, segment_id: str, user_id: str, label: str) -> None:
+    def set_manual_label(
+        self,
+        segment_id: str,
+        user_id: str,
+        label: str,
+        *,
+        reason: str = "Изменено пользователем",
+    ) -> None:
+        self.set_manual_labels([segment_id], user_id, label, reason=reason)
+
+    def set_manual_labels(
+        self,
+        segment_ids: list[str],
+        user_id: str,
+        label: str,
+        *,
+        reason: str = "Изменено пользователем",
+    ) -> int:
         normalized = " ".join(label.split())
         if not normalized:
             raise ValueError("Подпись не может быть пустой")
+        if not segment_ids:
+            return 0
+        now = _now()
         with self._connect() as connection:
-            connection.execute(
+            connection.executemany(
                 """
                 INSERT INTO segment_attributions(
-                    segment_id, status, manual_label, manual_by, manual_at, updated_at
-                ) VALUES (?, 'manual', ?, ?, ?, ?)
+                    segment_id, status, manual_label, manual_by, manual_at, reason, updated_at
+                ) VALUES (?, 'manual', ?, ?, ?, ?, ?)
                 ON CONFLICT(segment_id) DO UPDATE SET status='manual',
                     manual_label=excluded.manual_label, manual_by=excluded.manual_by,
-                    manual_at=excluded.manual_at, updated_at=excluded.updated_at
+                    manual_at=excluded.manual_at, reason=excluded.reason,
+                    updated_at=excluded.updated_at
                 """,
-                (segment_id, normalized, user_id, _now(), _now()),
+                [
+                    (segment_id, normalized, user_id, now, reason, now)
+                    for segment_id in segment_ids
+                ],
             )
+        return len(segment_ids)

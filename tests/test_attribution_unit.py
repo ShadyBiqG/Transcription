@@ -53,6 +53,31 @@ def test_aggregate_marks_conflicting_frames_unknown() -> None:
     assert result["status"] == "unknown"
 
 
+def test_aggregate_accepts_one_confident_detection_without_conflicts() -> None:
+    result = aggregate_frame_results(
+        [
+            {"status": "no_highlight", "speaker_label": None, "confidence": 0.1},
+            {"status": "detected", "speaker_label": "Гость", "confidence": 0.88},
+            {"status": "label_unreadable", "speaker_label": None, "confidence": 0.2},
+        ]
+    )
+
+    assert result["status"] == "detected"
+    assert result["speaker_label"] == "Гость"
+
+
+def test_aggregate_rejects_one_uncertain_detection() -> None:
+    result = aggregate_frame_results(
+        [
+            {"status": "no_highlight", "speaker_label": None, "confidence": 0.1},
+            {"status": "detected", "speaker_label": "Гость", "confidence": 0.6},
+            {"status": "label_unreadable", "speaker_label": None, "confidence": 0.2},
+        ]
+    )
+
+    assert result["status"] == "unknown"
+
+
 def test_representative_segments_prefer_longest_utterances() -> None:
     segments = [
         {"id": "short", "ordinal": 0, "start_ms": 0, "end_ms": 1000},

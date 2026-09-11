@@ -73,6 +73,8 @@ button.compact { min-height: 30px; padding: 4px 9px; font-size: .78rem; }
 .segment-review summary { color: #b8c4d7; cursor: pointer; font-size: .85rem; }
 .segment-review .table-wrap { max-height: 360px; overflow: auto; }
 .segment-review table { font-size: .82rem; }
+.segment-review td:nth-child(3) { min-width: 260px; max-width: 520px; }
 .segment-review .timecode { color: #8fb6d9; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.segment-review .review-help { color: #99a9c0; font-size: .82rem; }
 @media (max-width: 680px) { .status-panel { align-items: stretch; flex-direction: column; } .account { justify-content: space-between; } .controls button { margin-left: 0; width: 100%; } }
-@media (max-width: 680px) { .attribution-progress { grid-template-columns: 1fr; } .attribution-progress div { align-items: flex-start; flex-direction: column; gap: .15rem; } .segment-review th:nth-child(2), .segment-review td:nth-child(2), .segment-review th:nth-child(4), .segment-review td:nth-child(4) { display: none; } }
+@media (max-width: 680px) { .attribution-progress { grid-template-columns: 1fr; } .attribution-progress div { align-items: flex-start; flex-direction: column; gap: .15rem; } .segment-review th:nth-child(2), .segment-review td:nth-child(2), .segment-review th:nth-child(5), .segment-review td:nth-child(5), .segment-review th:nth-child(6), .segment-review td:nth-child(6) { display: none; } }

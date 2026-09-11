@@ -273,12 +273,81 @@ def test_attribution_processing_modes(
             f"/api/v1/jobs/{job['id']}/attribution-runs/{started['id']}",
             {"completed", "failed"},
         )
+        edited = client.patch(
+            f"/api/v1/jobs/{job['id']}/attribution-runs/{run['id']}"
+            f"/segments/{run['segments'][0]['id']}",
+            json={"speaker_label": "Исправленный"},
+        )
+        assert edited.status_code == 200
+        corrected = client.get(
+            f"/api/v1/jobs/{job['id']}/attribution-runs/{run['id']}"
+        ).json()
 
     assert run["status"] == "completed"
     assert run["processing_mode"] == processing_mode
     assert len(run["segments"]) == 4
     assert {item["speaker_label"] for item in run["segments"]} == {"Гость"}
     assert routerai.calls == ["vendor/primary", "vendor/fallback"] * (expected_calls // 2)
+    expected_manual = 3 if processing_mode == "fast" else 1
+    assert sum(item["status"] == "manual" for item in corrected["segments"]) == expected_manual
+    assert sum(
+        item["manual_label"] == "Исправленный" for item in corrected["segments"]
+    ) == expected_manual
+
+
+def test_precise_manual_run_inherits_fast_labels_without_model_calls(
+    settings, fake_runner
+) -> None:
+    routerai = FakeRouterAI()
+    app = create_app(
+        settings,
+        fake_runner,
+        routerai=routerai,
+        frame_extractor=FakeExtractor(),
+    )
+    with TestClient(app) as client:
+        user = register_user(client, "admin@example.com")
+        JobRepository(settings.database_path).set_user_role(user["id"], UserRole.ADMIN)
+        client.patch(
+            "/api/v1/admin/settings",
+            json={
+                "api_key": "routerai-test-secret",
+                "provider_enabled": True,
+                "primary_model_id": "vendor/primary",
+                "fallback_model_id": "vendor/fallback",
+                "allowed_model_ids": ["vendor/primary", "vendor/fallback"],
+            },
+        )
+        created = client.post(
+            "/api/v1/jobs",
+            files={"file": ("meeting.webm", b"fake-webm", "video/webm")},
+        ).json()
+        job = _wait(client, f"/api/v1/jobs/{created['id']}", {"completed", "failed"})
+        fast = client.post(
+            f"/api/v1/jobs/{job['id']}/attribution-runs",
+            json={"external_processing_consent": True, "processing_mode": "fast"},
+        ).json()
+        fast = _wait(
+            client,
+            f"/api/v1/jobs/{job['id']}/attribution-runs/{fast['id']}",
+            {"completed", "failed"},
+        )
+        calls_before_manual = len(routerai.calls)
+
+        manual = client.post(
+            f"/api/v1/jobs/{job['id']}/attribution-runs",
+            json={
+                "external_processing_consent": False,
+                "processing_mode": "precise",
+                "source_run_id": fast["id"],
+            },
+        ).json()
+
+    assert manual["status"] == "completed"
+    assert manual["processing_mode"] == "precise"
+    assert len(routerai.calls) == calls_before_manual
+    assert manual["segments"]
+    assert {item["manual_label"] for item in manual["segments"]} == {"Гость"}
 
 
 def test_incompatible_model_is_not_retried_for_every_segment(

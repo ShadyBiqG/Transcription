@@ -134,6 +134,37 @@ function attributionModeLabel(mode) {
   return mode === "precise" ? "Точный" : "Быстрый";
 }
 
+function reviewRows(segments, mode, run, job) {
+  const groups = mode === "fast"
+    ? [...segments.reduce((result, segment) => {
+      const group = result.get(segment.source_label) || [];
+      group.push(segment);
+      result.set(segment.source_label, group);
+      return result;
+    }, new Map()).values()]
+    : segments.map((segment) => [segment]);
+  return groups.map((group) => {
+    const segment = group[0];
+    const labels = [...new Set(group.map((item) => item.manual_label || item.speaker_label).filter(Boolean))];
+    const statuses = [...new Set(group.map((item) => item.status))];
+    const reasons = [...new Set(group.map((item) => item.reason).filter(Boolean))];
+    const label = labels.length === 1 ? labels[0] : labels.length ? "Разные подписи" : "—";
+    const status = statuses.length === 1 ? attributionStatus(statuses[0]) : "Смешанный";
+    const text = mode === "fast"
+      ? `${group.length} реплик. ${group.slice(0, 2).map((item) => item.text).join(" / ")}`
+      : segment.text;
+    return `<tr>
+      <td class="timecode">${formatTimecode(segment.start_ms)}</td>
+      <td>${escapeHtml(segment.source_label)}</td>
+      <td>${escapeHtml(text || "—")}</td>
+      <td>${escapeHtml(label)}</td>
+      <td>${escapeHtml(status)}</td>
+      <td>${escapeHtml(reasons.join("; ") || "—")}</td>
+      <td><button class="secondary compact" data-segment="${segment.id}" data-run="${run.id}" data-job="${job.id}" data-label="${escapeHtml(labels.length === 1 ? labels[0] : "")}" type="button">Изменить</button></td>
+    </tr>`;
+  }).join("");
+}
+
 function renderJob(job) {
   const card = document.createElement("article");
   card.className = "job";
@@ -153,13 +184,7 @@ function renderJob(job) {
   const progress = segments.length ? Math.round((processedSegments / segments.length) * 100) : 0;
   const attributionRunning = ["queued", "running"].includes(run?.status);
   const attributionMode = run?.processing_mode || "fast";
-  const segmentRows = segments.map((segment) => `<tr>
-    <td class="timecode">${formatTimecode(segment.start_ms)}</td>
-    <td>${escapeHtml(segment.source_label)}</td>
-    <td>${escapeHtml(segment.manual_label || segment.speaker_label || "—")}</td>
-    <td>${escapeHtml(attributionStatus(segment.status))}</td>
-    <td><button class="secondary compact" data-segment="${segment.id}" data-run="${run.id}" data-job="${job.id}" type="button">Изменить</button></td>
-  </tr>`).join("");
+  const segmentRows = run ? reviewRows(segments, attributionMode, run, job) : "";
   const attribution = job.status === "completed" ? `
     <section class="attribution-panel">
       <div class="attribution-toolbar">
@@ -171,17 +196,19 @@ function renderJob(job) {
             </select>
           </label>
           <button data-attribution="${job.id}" type="button">${run ? "Определить повторно" : "Определить говорящих"}</button>`}
+        ${!attributionRunning ? `<button class="secondary" data-manual-attribution="${job.id}" type="button">Ручная корректировка</button>` : ""}
         ${run ? `<span class="badge ${run.status}">${escapeHtml(attributionRunStatus(run.status))}</span>` : ""}
-        ${run && !segments.length && !attributionRunning ? `<button class="secondary compact" data-load-attribution="${run.id}" data-job="${job.id}" type="button">Показать реплики</button>` : ""}
       </div>
       ${run?.error_message ? `<p class="attribution-error">${escapeHtml(run.error_message)}</p>` : ""}
       ${segments.length ? `<div class="attribution-progress" aria-label="Обработано ${progress}%">
         <div><strong>${processedSegments} из ${segments.length}</strong><span>Определено: ${detectedSegments} · Не определено: ${unknownSegments}</span></div>
         <progress max="100" value="${progress}">${progress}%</progress>
-      </div>
-      <details class="segment-review"><summary>Реплики и ручная корректировка</summary>
-        <div class="table-wrap"><table><thead><tr><th>Время</th><th>Метка</th><th>Говорящий</th><th>Статус</th><th></th></tr></thead><tbody>${segmentRows}</tbody></table></div>
-      </details>` : ""}
+      </div>` : ""}
+      <details class="segment-review" open><summary>Реплики и ручная корректировка · ${attributionModeLabel(attributionMode).toLowerCase()} режим</summary>
+        ${segments.length ? `
+        <div class="table-wrap"><table><thead><tr><th>Время</th><th>Метка</th><th>Текст</th><th>Говорящий</th><th>Статус</th><th>Причина</th><th></th></tr></thead><tbody>${segmentRows}</tbody></table></div>
+        ` : `<p class="review-help">Выберите режим и нажмите «Ручная корректировка». Кадры во внешний сервис не отправляются.</p>`}
+      </details>
     </section>` : "";
   card.innerHTML = `
     <div><strong>${escapeHtml(job.original_filename)}</strong><span>${formatSize(job.size_bytes)}</span></div>
@@ -194,7 +221,7 @@ function renderJob(job) {
     </div>
     ${attribution}<footer>${downloads}<a data-download="${job.manifest_url}" href="#">Manifest</a></footer>`;
   card.querySelector("[data-attribution]")?.addEventListener("click", () => startAttribution(job.id));
-  card.querySelector("[data-load-attribution]")?.addEventListener("click", (event) => pollAttribution(job.id, event.currentTarget.dataset.loadAttribution));
+  card.querySelector("[data-manual-attribution]")?.addEventListener("click", () => startManualAttribution(job.id));
   card.querySelectorAll("[data-segment]").forEach((button) => button.addEventListener("click", () => editSpeaker(button)));
   card.querySelectorAll("[data-download]").forEach((link) => {
     link.addEventListener("click", async (event) => {
@@ -212,12 +239,27 @@ function renderJob(job) {
 }
 
 async function editSpeaker(button) {
-  const speakerLabel = window.prompt("Введите подпись говорящего", button.textContent.split(" · ")[0]);
+  const speakerLabel = window.prompt("Введите подпись говорящего", button.dataset.label || "");
   if (!speakerLabel?.trim()) return;
   try {
     const path = `/api/v1/jobs/${button.dataset.job}/attribution-runs/${button.dataset.run}/segments/${button.dataset.segment}`;
     await api(path, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ speaker_label: speakerLabel.trim() }) });
     await pollAttribution(button.dataset.job, button.dataset.run);
+  } catch (error) { messageNode.textContent = error.message; }
+}
+
+async function startManualAttribution(jobId) {
+  const mode = document.querySelector(`[data-attribution-mode="${jobId}"]`)?.value || "fast";
+  const sourceRunId = attributionRuns.get(jobId)?.id || null;
+  try {
+    const response = await api(`/api/v1/jobs/${jobId}/attribution-runs`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ external_processing_consent: false, processing_mode: mode, source_run_id: sourceRunId }),
+    });
+    const run = await response.json();
+    attributionRuns.set(jobId, run);
+    pollAttribution(jobId, run.id);
+    await refreshJobs();
   } catch (error) { messageNode.textContent = error.message; }
 }
 
@@ -290,16 +332,17 @@ async function openTranscript(path) {
 async function refreshJobs() {
   try {
     const jobs = await (await api("/api/v1/jobs")).json();
-    jobs.forEach((job) => {
+    await Promise.all(jobs.map(async (job) => {
       const saved = job.latest_attribution;
       const current = attributionRuns.get(job.id);
       if (!saved) return;
       if (current?.id === saved.id && current.segments?.length) {
         attributionRuns.set(job.id, { ...current, ...saved, segments: current.segments });
       } else {
-        attributionRuns.set(job.id, { ...saved, segments: [] });
+        const fullRun = await (await api(`/api/v1/jobs/${job.id}/attribution-runs/${saved.id}`)).json();
+        attributionRuns.set(job.id, fullRun);
       }
-    });
+    }));
     jobsNode.replaceChildren(...jobs.map(renderJob));
     if (!jobs.length) jobsNode.textContent = "Заданий пока нет.";
   } catch (error) {

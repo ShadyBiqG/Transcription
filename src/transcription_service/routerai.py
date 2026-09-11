@@ -41,10 +41,7 @@ VISION_SCHEMA: dict[str, Any] = {
                                 "ambiguous",
                             ]
                         },
-                        "speaker_label": {
-                            "type": ["string", "null"],
-                            "maxLength": 120,
-                        },
+                        "speaker_label": {"type": ["string", "null"], "maxLength": 80},
                         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                         "highlight_bbox": {
                             "type": ["array", "null"],
@@ -58,7 +55,7 @@ VISION_SCHEMA: dict[str, Any] = {
                             "minItems": 4,
                             "maxItems": 4,
                         },
-                        "reason": {"type": "string", "maxLength": 200},
+                        "reason": {"type": "string", "maxLength": 120},
                     },
                 },
             }
@@ -89,7 +86,7 @@ SPEAKER_ATTRIBUTION_PROMPT = """\
 
 speaker_label заполняй только для detected, иначе null. Координаты bbox указывай как
 [left, top, right, bottom] в долях размера полного кадра от 0 до 1; если область нельзя
-надёжно указать — null. reason — одна короткая проверяемая причина без рассуждений.
+надёжно указать — null. reason — не более восьми слов, только проверяемая причина.
 Верни ровно по одному результату для каждого кадра, сохрани номера и порядок кадров.
 Формат ответа: JSON-объект {"results": [объекты результатов]}. Каждый объект обязан
 содержать frame_index, status, speaker_label, confidence, highlight_bbox, label_bbox
@@ -207,7 +204,7 @@ class RouterAIClient:
             "model": model,
             "messages": [{"role": "user", "content": content}],
             "temperature": 0,
-            "max_tokens": 500,
+            "max_tokens": min(1600, 600 + 250 * len(frame_paths)),
             "session_id": session_id,
             "response_format": {"type": "json_schema", "json_schema": VISION_SCHEMA},
         }
