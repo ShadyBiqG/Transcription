@@ -93,6 +93,12 @@ uv run ruff check .
 
 Полная инструкция по установке как Windows-службы, настройке брандмауэра и загрузке файлов с другого компьютера находится в [docs/windows-server-deployment.md](docs/windows-server-deployment.md).
 
+Обновление установленной Windows-службы с проверками, резервной копией и журналом:
+
+```powershell
+.\deploy\windows-service\update-project.cmd
+```
+
 ## Документация
 
 - [Оглавление документации](docs/README.md)
