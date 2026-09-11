@@ -44,6 +44,7 @@ class FakeRouterAI:
     def __init__(self) -> None:
         self.base_url = "https://provider.test/v1"
         self.calls: list[str] = []
+        self.frame_counts: list[int] = []
 
     async def fetch_models(self) -> list[dict]:
         return [
@@ -61,6 +62,7 @@ class FakeRouterAI:
 
     async def analyze_frames(self, api_key, model, frame_paths, session_id, max_attempts=1):
         self.calls.append(model)
+        self.frame_counts.append(len(frame_paths))
         if model == "vendor/primary":
             raise RouterAIError("primary unavailable", status_code=503, retryable=True)
         return RouterAIResult(
@@ -92,6 +94,7 @@ class FakeRouterAI:
 class IncompatiblePrimaryRouterAI(FakeRouterAI):
     async def analyze_frames(self, api_key, model, frame_paths, session_id, max_attempts=1):
         self.calls.append(model)
+        self.frame_counts.append(len(frame_paths))
         if model == "vendor/primary":
             raise RouterAIError(
                 "response_format json_schema is not supported",
@@ -288,6 +291,10 @@ def test_attribution_processing_modes(
     assert len(run["segments"]) == 4
     assert {item["speaker_label"] for item in run["segments"]} == {"Гость"}
     assert routerai.calls == ["vendor/primary", "vendor/fallback"] * (expected_calls // 2)
+    if processing_mode == "fast":
+        assert routerai.frame_counts == [5, 5, 2, 2]
+    else:
+        assert routerai.frame_counts == [1, 1, 2, 2, 2, 2, 2, 2]
     expected_manual = 3 if processing_mode == "fast" else 1
     assert sum(item["status"] == "manual" for item in corrected["segments"]) == expected_manual
     assert sum(

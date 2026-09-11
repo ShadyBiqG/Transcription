@@ -27,7 +27,7 @@ class Settings:
     ffmpeg_path: Path | None = None
     routerai_base_url: str = "https://routerai.ru/api/v1"
     routerai_timeout_seconds: int = 60
-    attribution_max_frames: int = 3
+    attribution_max_frames: int = 2
     model_catalog_refresh_hours: int = 24
 
     def __post_init__(self) -> None:
@@ -111,7 +111,7 @@ class Settings:
                     os.getenv("TRANSCRIPTION_ROUTERAI_TIMEOUT_SECONDS", "60"),
                 )
             ),
-            attribution_max_frames=int(os.getenv("TRANSCRIPTION_ATTRIBUTION_MAX_FRAMES", "3")),
+            attribution_max_frames=int(os.getenv("TRANSCRIPTION_ATTRIBUTION_MAX_FRAMES", "2")),
             model_catalog_refresh_hours=int(
                 os.getenv("TRANSCRIPTION_MODEL_CATALOG_REFRESH_HOURS", "24")
             ),

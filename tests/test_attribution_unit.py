@@ -26,7 +26,8 @@ def test_parser_extracts_noscribe_segments(tmp_path: Path) -> None:
 
 
 def test_frame_selection_avoids_segment_edges() -> None:
-    assert choose_frame_times(0, 9000, 3) == [1800, 4500, 7200]
+    assert choose_frame_times(0, 9000, 2) == [3600, 5400]
+    assert choose_frame_times(0, 9000, 3) == [3150, 4500, 5850]
     assert choose_frame_times(1000, 1100, 3) == [1050]
 
 
@@ -89,6 +90,27 @@ def test_representative_segments_prefer_longest_utterances() -> None:
     selected = _representative_segments(segments, limit=3)
 
     assert [item["id"] for item in selected] == ["long-early", "long-late", "medium"]
+
+
+def test_representative_segments_deprioritize_pauses() -> None:
+    segments = [
+        {
+            "id": "pause",
+            "ordinal": 0,
+            "start_ms": 0,
+            "end_ms": 20000,
+            "text": "(20 секунд паузы)",
+        },
+        {
+            "id": "speech",
+            "ordinal": 1,
+            "start_ms": 20000,
+            "end_ms": 26000,
+            "text": "Длинная реплика",
+        },
+    ]
+
+    assert _representative_segments(segments, limit=1)[0]["id"] == "speech"
 
 
 def test_processing_modes_group_by_voice_or_segment() -> None:

@@ -26,9 +26,9 @@ def choose_frame_times(start_ms: int, end_ms: int, max_frames: int = 3) -> list[
         return [start_ms + duration // 2]
     count = min(max_frames, 5)
     if count == 2:
-        fractions = (0.35, 0.65)
+        fractions = (0.4, 0.6)
     elif count == 3:
-        fractions = (0.2, 0.5, 0.8)
+        fractions = (0.35, 0.5, 0.65)
     else:
         fractions = tuple((index + 1) / (count + 1) for index in range(count))
     margin = min(350, duration // 5)

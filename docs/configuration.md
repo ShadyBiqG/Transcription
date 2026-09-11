@@ -203,7 +203,8 @@ Cookie также всегда получает флаги `HttpOnly` и `SameSi
 
 `TRANSCRIPTION_EXTERNAL_API_BASE_URL` по умолчанию равен `https://routerai.ru/api/v1`.
 Таймаут задаётся `TRANSCRIPTION_EXTERNAL_API_TIMEOUT_SECONDS`, число полных кадров на
-реплику — `TRANSCRIPTION_ATTRIBUTION_MAX_FRAMES` (от 1 до 5).
+реплику — `TRANSCRIPTION_ATTRIBUTION_MAX_FRAMES` (от 1 до 5,
+по умолчанию 2). Кадры берутся вблизи середины реплики, а не у её границ.
 
 Перед запуском пользователь выбирает режим определения. `Быстрый` анализирует
 репрезентативные реплики каждой уникальной метки `S00/S01` и переносит имя на все

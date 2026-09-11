@@ -10,6 +10,14 @@ const healthNode = document.querySelector("#health");
 let refreshTimer = null;
 let healthTimer = null;
 const attributionRuns = new Map();
+const jobUiState = new Map();
+
+function uiState(jobId) {
+  if (!jobUiState.has(jobId)) {
+    jobUiState.set(jobId, { reviewOpen: false, tableScrollLeft: 0, tableScrollTop: 0 });
+  }
+  return jobUiState.get(jobId);
+}
 
 function showAuth() {
   appShell.hidden = true;
@@ -168,6 +176,8 @@ function reviewRows(segments, mode, run, job) {
 function renderJob(job) {
   const card = document.createElement("article");
   card.className = "job";
+  card.dataset.jobCard = job.id;
+  const state = uiState(job.id);
   const run = attributionRuns.get(job.id);
   const savedAttribution = job.saved_attribution;
   const preferredTranscript = savedAttribution?.attributed_transcript_url || job.transcript_url;
@@ -204,7 +214,7 @@ function renderJob(job) {
         <div><strong>${processedSegments} из ${segments.length}</strong><span>Определено: ${detectedSegments} · Не определено: ${unknownSegments}</span></div>
         <progress max="100" value="${progress}">${progress}%</progress>
       </div>` : ""}
-      <details class="segment-review" open><summary>Реплики и ручная корректировка · ${attributionModeLabel(attributionMode).toLowerCase()} режим</summary>
+      <details class="segment-review"><summary>Реплики и ручная корректировка · ${attributionModeLabel(attributionMode).toLowerCase()} режим</summary>
         ${segments.length ? `
         <div class="table-wrap"><table><thead><tr><th>Время</th><th>Метка</th><th>Текст</th><th>Говорящий</th><th>Статус</th><th>Причина</th><th></th></tr></thead><tbody>${segmentRows}</tbody></table></div>
         ` : `<p class="review-help">Выберите режим и нажмите «Ручная корректировка». Кадры во внешний сервис не отправляются.</p>`}
@@ -222,6 +232,18 @@ function renderJob(job) {
     ${attribution}<footer>${downloads}<a data-download="${job.manifest_url}" href="#">Manifest</a></footer>`;
   card.querySelector("[data-attribution]")?.addEventListener("click", () => startAttribution(job.id));
   card.querySelector("[data-manual-attribution]")?.addEventListener("click", () => startManualAttribution(job.id));
+  const review = card.querySelector(".segment-review");
+  if (review) {
+    review.open = state.reviewOpen;
+    review.addEventListener("toggle", () => { state.reviewOpen = review.open; });
+  }
+  const tableWrap = card.querySelector(".segment-review .table-wrap");
+  if (tableWrap) {
+    tableWrap.addEventListener("scroll", () => {
+      state.tableScrollLeft = tableWrap.scrollLeft;
+      state.tableScrollTop = tableWrap.scrollTop;
+    }, { passive: true });
+  }
   card.querySelectorAll("[data-segment]").forEach((button) => button.addEventListener("click", () => editSpeaker(button)));
   card.querySelectorAll("[data-download]").forEach((link) => {
     link.addEventListener("click", async (event) => {
@@ -343,7 +365,20 @@ async function refreshJobs() {
         attributionRuns.set(job.id, fullRun);
       }
     }));
+    const pageScrollLeft = window.scrollX;
+    const pageScrollTop = window.scrollY;
     jobsNode.replaceChildren(...jobs.map(renderJob));
+    window.requestAnimationFrame(() => {
+      window.scrollTo(pageScrollLeft, pageScrollTop);
+      jobsNode.querySelectorAll("[data-job-card]").forEach((card) => {
+        const state = uiState(card.dataset.jobCard);
+        const tableWrap = card.querySelector(".segment-review .table-wrap");
+        if (tableWrap) {
+          tableWrap.scrollLeft = state.tableScrollLeft;
+          tableWrap.scrollTop = state.tableScrollTop;
+        }
+      });
+    });
     if (!jobs.length) jobsNode.textContent = "Заданий пока нет.";
   } catch (error) {
     if (!appShell.hidden) jobsNode.textContent = error.message;

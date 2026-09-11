@@ -180,40 +180,40 @@ class AttributionService:
 
                 aggregate = _unknown("Подпись не определена на выбранных кадрах")
                 call_id: str | None = None
-                evidence_segment: dict[str, Any] | None = None
-                for candidate in _representative_segments(group):
-                    if self._budget_blocked(run):
-                        self._mark_pending_unknown(
-                            run_id, "Обработка остановлена: достигнут лимит расходов"
-                        )
-                        self.repository.finish(
-                            run_id,
-                            "blocked_budget",
-                            "budget_exceeded",
-                            "Достигнут лимит расходов",
-                        )
-                        self.publish_artifacts(run_id)
-                        return
-                    frame_paths = self._extract_segment_frames(
+                candidates = _representative_segments(group)
+                evidence_segment = candidates[0]
+                if self._budget_blocked(run):
+                    self._mark_pending_unknown(
+                        run_id, "Обработка остановлена: достигнут лимит расходов"
+                    )
+                    self.repository.finish(
+                        run_id,
+                        "blocked_budget",
+                        "budget_exceeded",
+                        "Достигнут лимит расходов",
+                    )
+                    self.publish_artifacts(run_id)
+                    return
+                frame_paths = [
+                    frame_path
+                    for candidate in candidates
+                    for frame_path in self._extract_segment_frames(
                         job_dir, run_dir, run_id, candidate
                     )
-                    try:
-                        model_result, candidate_call_id = await self._analyze_with_profile(
-                            run,
-                            candidate,
-                            frame_paths,
-                            key,
-                            profile,
-                            unavailable_models,
-                        )
-                    except AttributionError as exc:
-                        aggregate = _unknown(f"Внешняя модель недоступна: {exc}")
-                        continue
+                ]
+                try:
+                    model_result, call_id = await self._analyze_with_profile(
+                        run,
+                        evidence_segment,
+                        frame_paths,
+                        key,
+                        profile,
+                        unavailable_models,
+                    )
+                except AttributionError as exc:
+                    aggregate = _unknown(f"Внешняя модель недоступна: {exc}")
+                else:
                     aggregate = aggregate_frame_results(model_result.results)
-                    call_id = candidate_call_id
-                    evidence_segment = candidate
-                    if aggregate["status"] == "detected":
-                        break
 
                 self._set_group_attribution(
                     group, aggregate, call_id, evidence_segment, source_label=source_label
@@ -494,11 +494,20 @@ def aggregate_frame_results(results: list[dict[str, Any]]) -> dict[str, Any]:
 def _representative_segments(
     segments: list[dict[str, Any]], limit: int = 3
 ) -> list[dict[str, Any]]:
-    """Выбирает несколько самых длинных реплик одной голосовой метки."""
+    """Выбирает самые длинные непустые реплики одной голосовой метки."""
     return sorted(
         segments,
-        key=lambda item: (-(item["end_ms"] - item["start_ms"]), item["ordinal"]),
+        key=lambda item: (
+            _is_pause_segment(item),
+            -(item["end_ms"] - item["start_ms"]),
+            item["ordinal"],
+        ),
     )[:limit]
+
+
+def _is_pause_segment(segment: dict[str, Any]) -> bool:
+    text = str(segment.get("text") or "").strip()
+    return not text or (text.startswith("(") and text.endswith(")"))
 
 
 def _group_pending_segments(
