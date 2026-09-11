@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local-transcription.invalid/schemas/attribution-v1.json",
+  "title": "Speaker attribution artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_id", "job_id", "status", "segments"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "run_id": { "type": "string", "format": "uuid" },
+    "job_id": { "type": "string", "format": "uuid" },
+    "status": { "enum": ["completed", "failed", "blocked_budget"] },
+    "segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["segment_id", "source_anchor", "source_label", "start_ms", "end_ms", "status", "speaker_label", "confidence", "evidence"],
+        "properties": {
+          "segment_id": { "type": "string", "format": "uuid" },
+          "source_anchor": { "type": "string" },
+          "source_label": { "type": "string", "pattern": "^S\\d+$" },
+          "start_ms": { "type": "integer", "minimum": 0 },
+          "end_ms": { "type": "integer", "minimum": 1 },
+          "status": { "enum": ["detected", "unknown", "manual"] },
+          "speaker_label": { "type": ["string", "null"] },
+          "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["frame_id", "timestamp_ms", "sha256"],
+              "properties": {
+                "frame_id": { "type": "string", "format": "uuid" },
+                "timestamp_ms": { "type": "integer", "minimum": 0 },
+                "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                "highlight_bbox": {
+                  "type": ["array", "null"],
+                  "prefixItems": [
+                    { "type": "number", "minimum": 0, "maximum": 1 },
+                    { "type": "number", "minimum": 0, "maximum": 1 },
+                    { "type": "number", "minimum": 0, "maximum": 1 },
+                    { "type": "number", "minimum": 0, "maximum": 1 }
+                  ],
+                  "minItems": 4,
+                  "maxItems": 4
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

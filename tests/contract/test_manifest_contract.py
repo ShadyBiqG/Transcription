@@ -28,13 +28,7 @@ def test_completed_job_opens_html_and_has_valid_manifest(settings, fake_runner):
     assert transcript.headers["content-security-policy"].startswith("default-src 'none'")
     assert "S00:" in transcript.text
     manifest = manifest_response.json()
-    schema_path = (
-        Path(__file__).parents[2]
-        / "specs"
-        / "002-local-transcription-service"
-        / "contracts"
-        / "job-manifest.schema.json"
-    )
+    schema_path = Path(__file__).parent / "schemas" / "job-manifest.schema.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     Draft202012Validator(schema, format_checker=FormatChecker()).validate(manifest)
     assert manifest["schema_version"] == 2

@@ -122,8 +122,7 @@ def test_attribution_without_external_consent_creates_unknown_artifact(
         assert edited.status_code == 200
         artifact = client.get(run["attribution_json_url"]).json()
         schema_path = (
-            Path(__file__).parents[2]
-            / "specs/003-speaker-frame-attribution/contracts/attribution.schema.json"
+            Path(__file__).parents[1] / "contract" / "schemas" / "attribution.schema.json"
         )
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         Draft202012Validator(schema).validate(artifact)
