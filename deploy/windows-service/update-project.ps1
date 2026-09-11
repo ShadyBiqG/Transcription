@@ -7,9 +7,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$OutputEncoding = [Console]::OutputEncoding
 
 $ProjectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
-$LogDirectory = Join-Path $PSScriptRoot "update-logs"
+$ProgramDataDirectory = [Environment]::GetFolderPath(
+    [Environment+SpecialFolder]::CommonApplicationData
+)
+$LogDirectory = Join-Path $ProgramDataDirectory "LocalTranscriptionService\update-logs"
 $Timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $LogPath = Join-Path $LogDirectory "update-$Timestamp.log"
 $LockPath = Join-Path $env:TEMP "LocalTranscriptionService-update.lock"
@@ -22,6 +27,54 @@ $ServiceWasRunning = $false
 $LockCreated = $false
 $TranscriptStarted = $false
 $ExitCode = 0
+
+$CurrentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$CurrentPrincipal = [Security.Principal.WindowsPrincipal]::new($CurrentIdentity)
+$IsElevated = $CurrentPrincipal.IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator
+)
+if (-not $IsElevated) {
+    $ElevationArguments = @(
+        "-NoLogo",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        $PSCommandPath
+    )
+    if ($SkipTests) {
+        $ElevationArguments += "-SkipTests"
+    }
+    if ($ForceSync) {
+        $ElevationArguments += "-ForceSync"
+    }
+    $ElevationArguments += @("-HealthUrl", $HealthUrl)
+    $ArgumentLine = ($ElevationArguments | ForEach-Object {
+        '"' + $_.Replace('"', '\"') + '"'
+    }) -join " "
+
+    Write-Host "Для обновления требуются права администратора." -ForegroundColor Yellow
+    Write-Host "Подтвердите запрос UAC и при необходимости введите данные администратора."
+    try {
+        $ElevationStartedAt = Get-Date
+        $ElevatedProcess = Start-Process -FilePath "powershell.exe" `
+            -ArgumentList $ArgumentLine -Verb RunAs -Wait -PassThru
+        $LatestLog = Get-ChildItem -LiteralPath $LogDirectory -Filter "update-*.log" `
+            -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTime -ge $ElevationStartedAt } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+        if ($LatestLog) {
+            Write-Host "Журнал обновления: $($LatestLog.FullName)" -ForegroundColor Green
+        }
+        exit $ElevatedProcess.ExitCode
+    }
+    catch {
+        Write-Host "[ОШИБКА] Повышение прав отменено или недоступно: $($_.Exception.Message)" `
+            -ForegroundColor Red
+        exit 5
+    }
+}
 
 function Write-Step {
     param([string]$Message)
@@ -107,13 +160,6 @@ try {
     Write-Host "Журнал обновления: $LogPath" -ForegroundColor Green
 
     $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $Principal = [Security.Principal.WindowsPrincipal]::new($Identity)
-    $IsAdministrator = $Principal.IsInRole(
-        [Security.Principal.WindowsBuiltInRole]::Administrator
-    )
-    if (-not $IsAdministrator) {
-        throw "Запустите update-project.cmd из PowerShell или cmd от имени администратора"
-    }
 
     try {
         New-Item -ItemType Directory -Path $LockPath -ErrorAction Stop | Out-Null

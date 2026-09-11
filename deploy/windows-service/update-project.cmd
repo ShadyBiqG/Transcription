@@ -15,7 +15,7 @@ set "UPDATE_EXIT_CODE=%ERRORLEVEL%"
 
 if not "%UPDATE_EXIT_CODE%"=="0" (
   echo.
-  echo Обновление завершилось с ошибкой. Путь к журналу указан выше.
+  echo Обновление завершилось с ошибкой. Проверьте сообщение выше и журнал, если он был создан.
 )
 
 exit /b %UPDATE_EXIT_CODE%

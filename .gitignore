@@ -11,6 +11,7 @@ build/
 !.env.example
 data/
 *.log
+deploy/windows-service/TranscriptionService.exe
 .DS_Store
 Thumbs.db
 .idea/
