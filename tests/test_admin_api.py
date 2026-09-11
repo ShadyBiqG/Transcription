@@ -172,3 +172,29 @@ def test_polza_nested_model_metadata_is_imported_as_compatible(
         "structured_outputs",
     ]
     assert catalog["models"][0]["pricing"]["pricing"]["currency"] == "RUB"
+
+
+def test_vision_model_with_json_mode_is_compatible_without_strict_outputs(
+    settings, fake_runner
+) -> None:
+    with TestClient(create_app(settings, fake_runner, start_worker=False)):
+        repository = AdminRepository(settings.database_path)
+        repository.replace_catalog(
+            [
+                {
+                    "id": "deepseek/deepseek-v4.1-flash",
+                    "architecture": {
+                        "input_modalities": ["text", "image"],
+                        "output_modalities": ["text"],
+                    },
+                    "top_provider": {
+                        "supported_parameters": ["response_format"],
+                    },
+                }
+            ]
+        )
+
+        catalog = repository.list_models()
+
+    assert catalog["models"][0]["model_id"] == "deepseek/deepseek-v4.1-flash"
+    assert catalog["models"][0]["compatible"] is True

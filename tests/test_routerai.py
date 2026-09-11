@@ -175,3 +175,58 @@ def test_polza_generation_history_is_used_as_cost_fallback() -> None:
     assert requested_paths[-1].endswith("/history/generations/gen_123")
     assert generation["total_cost"] == "0.42"
     assert generation["provider"] == "google"
+
+
+def test_strict_schema_falls_back_to_json_object(tmp_path) -> None:
+    frame = tmp_path / "frame.jpg"
+    frame.write_bytes(b"jpeg")
+    response_formats: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        response_format = payload["response_format"]["type"]
+        response_formats.append(response_format)
+        if response_format == "json_schema":
+            return httpx.Response(
+                400,
+                json={"error": {"message": "json_schema is not supported"}},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "id": "gen-json-mode",
+                "model": "deepseek/deepseek-v4.1-flash",
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "results": [
+                                        {
+                                            "frame_index": 0,
+                                            "status": "detected",
+                                            "speaker_label": "Гость",
+                                            "confidence": 0.9,
+                                            "highlight_bbox": None,
+                                            "label_bbox": None,
+                                            "reason": "зелёная рамка",
+                                        }
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            },
+        )
+
+    client = RouterAIClient(
+        "https://provider.test/api/v1", transport=httpx.MockTransport(handler)
+    )
+    result = asyncio.run(
+        client.analyze_frames("secret", "deepseek/deepseek-v4.1-flash", [frame], "test")
+    )
+
+    assert response_formats == ["json_schema", "json_object"]
+    assert result.results[0]["speaker_label"] == "Гость"

@@ -8,8 +8,8 @@ from .admin_repository import AdminRepository
 from .routerai import RouterAIClient, RouterAIError
 from .secrets import mask_secret, protect_secret, unprotect_secret
 
-DEFAULT_PRIMARY_MODEL = "mistralai/mistral-small-3.2-24b-instruct"
-DEFAULT_FALLBACK_MODEL = "google/gemini-2.5-flash-lite"
+DEFAULT_PRIMARY_MODEL = "google/gemini-2.5-flash-lite"
+DEFAULT_FALLBACK_MODEL = "deepseek/deepseek-v4.1-flash"
 
 
 class AdminService:

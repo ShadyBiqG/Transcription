@@ -91,6 +91,9 @@ speaker_label заполняй только для detected, иначе null. К
 [left, top, right, bottom] в долях размера полного кадра от 0 до 1; если область нельзя
 надёжно указать — null. reason — одна короткая проверяемая причина без рассуждений.
 Верни ровно по одному результату для каждого кадра, сохрани номера и порядок кадров.
+Формат ответа: JSON-объект {"results": [объекты результатов]}. Каждый объект обязан
+содержать frame_index, status, speaker_label, confidence, highlight_bbox, label_bbox
+и reason. Не добавляй Markdown и текст за пределами JSON.
 """
 
 
@@ -216,6 +219,26 @@ class RouterAIClient:
                     response = await client.post(
                         "/chat/completions", headers=headers, json=payload
                     )
+                    error_text = _safe_error(response).lower()
+                    if response.status_code == 400 and any(
+                        marker in error_text
+                        for marker in (
+                            "response_format",
+                            "json_schema",
+                            "json schema",
+                            "structured output",
+                            "structured_outputs",
+                        )
+                    ):
+                        compatibility_payload = {
+                            **payload,
+                            "response_format": {"type": "json_object"},
+                        }
+                        response = await client.post(
+                            "/chat/completions",
+                            headers=headers,
+                            json=compatibility_payload,
+                        )
             except httpx.ReadTimeout as exc:
                 raise RouterAIError(
                     "Истекло ожидание ответа RouterAI; результат вызова неизвестен",

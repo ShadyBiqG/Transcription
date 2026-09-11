@@ -200,7 +200,6 @@ class AdminRepository:
                     "image" in inputs
                     and "text" in outputs
                     and "response_format" in parameters
-                    and "structured_outputs" in parameters
                 )
                 model_id = str(model.get("id") or "")
                 if not model_id:
