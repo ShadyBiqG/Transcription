@@ -130,6 +130,17 @@ function formatTimecode(milliseconds) {
   return `[${[hours, minutes, seconds].map((value) => String(value).padStart(2, "0")).join(":")}]`;
 }
 
+const moneyFormatter = new Intl.NumberFormat("ru-RU", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+function formatMoney(value, fallback = "0,00") {
+  if (value === null || value === undefined || value === "") return fallback;
+  const number = Number(value);
+  return Number.isFinite(number) ? moneyFormatter.format(number) : fallback;
+}
+
 function attributionStatus(status) {
   return ({ pending: "Ожидает", detected: "Определён", unknown: "Не определён", manual: "Исправлен" })[status] || status;
 }
@@ -414,12 +425,12 @@ function showMetrics(selector, values) {
 }
 
 function usageTotalsRow(data, columns = 9) {
-  return `<tfoot><tr><th>Итого</th><th>${data.calls ?? 0}</th><th>${data.successful_calls ?? 0}</th><th>${data.failed_calls ?? 0}</th><th>${data.retries ?? 0}</th><th>${data.images ?? 0}</th><th>${data.input_units ?? 0}</th><th>${data.output_units ?? 0}</th><th colspan="${Math.max(1, columns - 8)}">${escapeHtml(String(data.confirmed_cost ?? "0"))} ₽</th></tr></tfoot>`;
+  return `<tfoot><tr><th>Итого</th><th>${data.calls ?? 0}</th><th>${data.successful_calls ?? 0}</th><th>${data.failed_calls ?? 0}</th><th>${data.retries ?? 0}</th><th>${data.images ?? 0}</th><th>${data.input_units ?? 0}</th><th>${data.output_units ?? 0}</th><th colspan="${Math.max(1, columns - 8)}">${formatMoney(data.confirmed_cost)} ₽</th></tr></tfoot>`;
 }
 
 function usageByUserTable(data) {
   if (!data.by_user?.length) return "Внешних обращений пока нет.";
-  const rows = data.by_user.map((item) => `<tr><td>${escapeHtml(item.email)}</td><td>${item.calls}</td><td>${item.successful_calls}</td><td>${item.failed_calls}</td><td>${item.retries}</td><td>${item.images}</td><td>${item.input_units}</td><td>${item.output_units}</td><td>${escapeHtml(item.confirmed_cost)} ₽</td></tr>`).join("");
+  const rows = data.by_user.map((item) => `<tr><td>${escapeHtml(item.email)}</td><td>${item.calls}</td><td>${item.successful_calls}</td><td>${item.failed_calls}</td><td>${item.retries}</td><td>${item.images}</td><td>${item.input_units}</td><td>${item.output_units}</td><td>${formatMoney(item.confirmed_cost)} ₽</td></tr>`).join("");
   return `<table><thead><tr><th>Пользователь</th><th>Вызовы</th><th>Успешно</th><th>Ошибки</th><th>Повторы</th><th>Кадры</th><th>Вход</th><th>Выход</th><th>Стоимость</th></tr></thead><tbody>${rows}</tbody>${usageTotalsRow(data)}</table>`;
 }
 
@@ -427,7 +438,7 @@ async function loadPersonalUsage() {
   const cards = document.querySelector("#personal-usage-cards"); cards.textContent = "Загрузка…";
   try {
     const data = await (await api("/api/v1/external-usage")).json();
-    showMetrics("#personal-usage-cards", { Вызовы: data.calls, Успешно: data.successful_calls, Ошибки: data.failed_calls, Кадры: data.images, "Стоимость, ₽": data.confirmed_cost });
+    showMetrics("#personal-usage-cards", { Вызовы: data.calls, Успешно: data.successful_calls, Ошибки: data.failed_calls, Кадры: data.images, "Стоимость, ₽": formatMoney(data.confirmed_cost) });
     document.querySelector("#personal-usage-table").innerHTML = usageByUserTable(data);
   } catch (error) { cards.textContent = `Не удалось загрузить статистику: ${error.message}`; }
 }
@@ -446,12 +457,12 @@ async function loadUsage() {
   let data;
   try { data = await (await api("/api/v1/admin/external-usage")).json(); }
   catch (error) { node.textContent = `Не удалось загрузить расходы: ${error.message}`; return; }
-  showMetrics("#usage-cards", { Вызовы: data.calls, Успешно: data.successful_calls, Ошибки: data.failed_calls, Кадры: data.images, "Стоимость, ₽": data.confirmed_cost });
+  showMetrics("#usage-cards", { Вызовы: data.calls, Успешно: data.successful_calls, Ошибки: data.failed_calls, Кадры: data.images, "Стоимость, ₽": formatMoney(data.confirmed_cost) });
   document.querySelector("#usage-table").innerHTML = usageByUserTable(data);
   const reasons = data.failure_reasons || [];
   const diagnostics = reasons.length ? `<div class="failure-summary"><h4>Зафиксированные причины ошибок</h4>${reasons.map((item) => `<details><summary>${item.calls} × ${escapeHtml(item.model)} — ${escapeHtml(item.error_summary || "Ошибка провайдера")}</summary><code>${escapeHtml(item.error_code || "без кода")}: ${escapeHtml(item.error_message || "Провайдер не сообщил подробности")}</code></details>`).join("")}</div>` : "";
   const statuses = { completed: "успешно", failed: "ошибка", outcome_unknown: "результат неизвестен", started: "выполняется" };
-  const calls = data.items.length ? `<table><thead><tr><th>Время</th><th>Провайдер</th><th>Модель</th><th>Статус</th><th>Кадры</th><th>Причина</th><th>Стоимость</th></tr></thead><tbody>${data.items.map((item) => `<tr><td>${formatDateTime(item.created_at)}</td><td>${escapeHtml(item.provider)}</td><td>${escapeHtml(item.actual_model || item.requested_model)}</td><td>${escapeHtml(statuses[item.status] || item.status)}</td><td>${item.image_count}</td><td>${escapeHtml(item.error_summary || "—")}</td><td>${item.provider_cost ?? "—"}</td></tr>`).join("")}</tbody></table>` : "Обращений нет.";
+  const calls = data.items.length ? `<table><thead><tr><th>Время</th><th>Провайдер</th><th>Модель</th><th>Статус</th><th>Кадры</th><th>Причина</th><th>Стоимость</th></tr></thead><tbody>${data.items.map((item) => `<tr><td>${formatDateTime(item.created_at)}</td><td>${escapeHtml(item.provider)}</td><td>${escapeHtml(item.actual_model || item.requested_model)}</td><td>${escapeHtml(statuses[item.status] || item.status)}</td><td>${item.image_count}</td><td>${escapeHtml(item.error_summary || "—")}</td><td>${item.provider_cost === null || item.provider_cost === undefined ? "—" : `${formatMoney(item.provider_cost)} ₽`}</td></tr>`).join("")}</tbody></table>` : "Обращений нет.";
   document.querySelector("#usage-details").innerHTML = diagnostics + calls;
 }
 
