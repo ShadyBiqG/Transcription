@@ -1,11 +1,13 @@
 from pathlib import Path
 
+from PIL import Image, ImageDraw
+
 from transcription_service.attribution_service import (
     _group_pending_segments,
     _representative_segments,
     aggregate_frame_results,
 )
-from transcription_service.frames import choose_frame_times
+from transcription_service.frames import choose_frame_times, prepare_frame_for_vision
 from transcription_service.transcript_parser import parse_noscribe_html
 
 
@@ -29,6 +31,29 @@ def test_frame_selection_avoids_segment_edges() -> None:
     assert choose_frame_times(0, 9000, 2) == [3600, 5400]
     assert choose_frame_times(0, 9000, 3) == [3150, 4500, 5850]
     assert choose_frame_times(1000, 1100, 3) == [1050]
+
+
+def test_frame_preparation_enlarges_green_speaker_tile(tmp_path: Path) -> None:
+    frame = tmp_path / "frame.jpg"
+    image = Image.new("RGB", (800, 450), (30, 35, 45))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((610, 35, 770, 125), outline=(0, 210, 120), width=4)
+    image.save(frame, format="JPEG", quality=95)
+
+    assert prepare_frame_for_vision(frame) is True
+
+    with Image.open(frame) as prepared:
+        assert prepared.width == 800
+        assert prepared.height > 450
+
+
+def test_frame_preparation_keeps_frame_without_green_tile(tmp_path: Path) -> None:
+    frame = tmp_path / "frame.jpg"
+    Image.new("RGB", (800, 450), (30, 35, 45)).save(frame, format="JPEG")
+    original = frame.read_bytes()
+
+    assert prepare_frame_for_vision(frame) is False
+    assert frame.read_bytes() == original
 
 
 def test_aggregate_requires_agreement_and_preserves_visible_label() -> None:
@@ -77,6 +102,29 @@ def test_aggregate_rejects_one_uncertain_detection() -> None:
     )
 
     assert result["status"] == "unknown"
+
+
+def test_aggregate_requires_two_frames_for_person_name() -> None:
+    single = aggregate_frame_results(
+        [
+            {
+                "status": "detected",
+                "speaker_label": "Егор Бирюлькин",
+                "confidence": 0.95,
+            },
+            {"status": "label_unreadable", "speaker_label": None, "confidence": 0.2},
+        ]
+    )
+    confirmed = aggregate_frame_results(
+        [
+            {"status": "detected", "speaker_label": "Егор Ематин", "confidence": 0.91},
+            {"status": "detected", "speaker_label": "Егор Ематин", "confidence": 0.88},
+        ]
+    )
+
+    assert single["status"] == "unknown"
+    assert confirmed["status"] == "detected"
+    assert confirmed["speaker_label"] == "Егор Ематин"
 
 
 def test_representative_segments_prefer_longest_utterances() -> None:

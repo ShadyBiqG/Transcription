@@ -14,7 +14,13 @@ const jobUiState = new Map();
 
 function uiState(jobId) {
   if (!jobUiState.has(jobId)) {
-    jobUiState.set(jobId, { reviewOpen: false, tableScrollLeft: 0, tableScrollTop: 0 });
+    jobUiState.set(jobId, {
+      reviewOpen: false,
+      tableScrollLeft: 0,
+      tableScrollTop: 0,
+      runId: null,
+      selectedMode: null,
+    });
   }
   return jobUiState.get(jobId);
 }
@@ -190,6 +196,11 @@ function renderJob(job) {
   card.dataset.jobCard = job.id;
   const state = uiState(job.id);
   const run = attributionRuns.get(job.id);
+  if (run?.id && state.runId !== run.id) {
+    state.runId = run.id;
+    state.selectedMode = run.processing_mode;
+  }
+  if (!state.selectedMode) state.selectedMode = run?.processing_mode || "fast";
   const savedAttribution = job.saved_attribution;
   const preferredTranscript = savedAttribution?.attributed_transcript_url || job.transcript_url;
   const downloads = job.status === "completed"
@@ -204,16 +215,17 @@ function renderJob(job) {
   const unknownSegments = segments.filter((segment) => segment.status === "unknown").length;
   const progress = segments.length ? Math.round((processedSegments / segments.length) * 100) : 0;
   const attributionRunning = ["queued", "running"].includes(run?.status);
-  const attributionMode = run?.processing_mode || "fast";
-  const segmentRows = run ? reviewRows(segments, attributionMode, run, job) : "";
+  const runMode = run?.processing_mode || state.selectedMode;
+  const selectedMode = state.selectedMode;
+  const segmentRows = run ? reviewRows(segments, runMode, run, job) : "";
   const attribution = job.status === "completed" ? `
     <section class="attribution-panel">
       <div class="attribution-toolbar">
-        ${attributionRunning ? `<span class="mode-label">Режим: ${attributionModeLabel(attributionMode)}</span>` : `
+        ${attributionRunning ? `<span class="mode-label">Режим: ${attributionModeLabel(runMode)}</span>` : `
           <label class="attribution-mode">Режим
             <select data-attribution-mode="${job.id}">
-              <option value="fast" ${attributionMode === "fast" ? "selected" : ""}>Быстрый — один раз для каждой S-метки</option>
-              <option value="precise" ${attributionMode === "precise" ? "selected" : ""}>Точный — анализ каждой реплики</option>
+              <option value="fast" ${selectedMode === "fast" ? "selected" : ""}>Быстрый — один раз для каждой S-метки</option>
+              <option value="precise" ${selectedMode === "precise" ? "selected" : ""}>Точный — анализ каждой реплики</option>
             </select>
           </label>
           <button data-attribution="${job.id}" type="button">${run ? "Определить повторно" : "Определить говорящих"}</button>`}
@@ -225,7 +237,7 @@ function renderJob(job) {
         <div><strong>${processedSegments} из ${segments.length}</strong><span>Определено: ${detectedSegments} · Не определено: ${unknownSegments}</span></div>
         <progress max="100" value="${progress}">${progress}%</progress>
       </div>` : ""}
-      <details class="segment-review"><summary>Реплики и ручная корректировка · ${attributionModeLabel(attributionMode).toLowerCase()} режим</summary>
+      <details class="segment-review"><summary>Реплики и ручная корректировка · ${attributionModeLabel(runMode).toLowerCase()} режим</summary>
         ${segments.length ? `
         <div class="table-wrap"><table><thead><tr><th>Время</th><th>Метка</th><th>Текст</th><th>Говорящий</th><th>Статус</th><th>Причина</th><th></th></tr></thead><tbody>${segmentRows}</tbody></table></div>
         ` : `<p class="review-help">Выберите режим и нажмите «Ручная корректировка». Кадры во внешний сервис не отправляются.</p>`}
@@ -242,7 +254,10 @@ function renderJob(job) {
     </div>
     ${attribution}<footer>${downloads}<a data-download="${job.manifest_url}" href="#">Manifest</a></footer>`;
   card.querySelector("[data-attribution]")?.addEventListener("click", () => startAttribution(job.id));
-  card.querySelector("[data-manual-attribution]")?.addEventListener("click", () => startManualAttribution(job.id));
+  card.querySelector("[data-manual-attribution]")?.addEventListener("click", (event) => startManualAttribution(job.id, event.currentTarget));
+  card.querySelector("[data-attribution-mode]")?.addEventListener("change", (event) => {
+    state.selectedMode = event.currentTarget.value;
+  });
   const review = card.querySelector(".segment-review");
   if (review) {
     review.open = state.reviewOpen;
@@ -281,23 +296,37 @@ async function editSpeaker(button) {
   } catch (error) { messageNode.textContent = error.message; }
 }
 
-async function startManualAttribution(jobId) {
-  const mode = document.querySelector(`[data-attribution-mode="${jobId}"]`)?.value || "fast";
+async function startManualAttribution(jobId, button) {
+  const state = uiState(jobId);
+  const mode = state.selectedMode || document.querySelector(`[data-attribution-mode="${jobId}"]`)?.value || "fast";
   const sourceRunId = attributionRuns.get(jobId)?.id || null;
+  button.disabled = true;
+  button.textContent = "Подготовка…";
+  messageNode.textContent = `Создаётся ${attributionModeLabel(mode).toLowerCase()} ручная версия без обращения к модели…`;
   try {
     const response = await api(`/api/v1/jobs/${jobId}/attribution-runs`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ external_processing_consent: false, processing_mode: mode, source_run_id: sourceRunId }),
     });
     const run = await response.json();
+    if (run.status === "failed") throw new Error(run.error_message || "Не удалось подготовить ручную версию");
     attributionRuns.set(jobId, run);
-    pollAttribution(jobId, run.id);
+    state.runId = run.id;
+    state.selectedMode = run.processing_mode;
+    state.reviewOpen = true;
     await refreshJobs();
-  } catch (error) { messageNode.textContent = error.message; }
+    messageNode.textContent = `${attributionModeLabel(run.processing_mode)} ручная версия готова. Подписи предыдущего результата перенесены.`;
+    if (["queued", "running"].includes(run.status)) pollAttribution(jobId, run.id);
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "Ручная корректировка";
+    messageNode.textContent = error.message;
+  }
 }
 
 async function startAttribution(jobId) {
-  const mode = document.querySelector(`[data-attribution-mode="${jobId}"]`)?.value || "fast";
+  const state = uiState(jobId);
+  const mode = state.selectedMode || document.querySelector(`[data-attribution-mode="${jobId}"]`)?.value || "fast";
   const modeDescription = mode === "precise"
     ? "Точный режим анализирует каждую реплику и расходует больше времени и средств."
     : "Быстрый режим определяет имя один раз для каждой метки S00/S01 и переносит его на все соответствующие реплики.";
@@ -310,6 +339,8 @@ async function startAttribution(jobId) {
     });
     const run = await response.json();
     attributionRuns.set(jobId, run);
+    state.runId = run.id;
+    state.selectedMode = run.processing_mode;
     pollAttribution(jobId, run.id);
     await refreshJobs();
   } catch (error) { messageNode.textContent = error.message; }

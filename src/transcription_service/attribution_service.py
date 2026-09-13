@@ -478,9 +478,11 @@ def aggregate_frame_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         if _normalize_label(str(item.get("speaker_label") or "")) == winner
     ]
     best = max(winner_items, key=lambda item: float(item.get("confidence") or 0))
+    display = " ".join(str(best["speaker_label"]).split())
+    if count == 1 and len(results) > 1 and _label_needs_confirmation(display):
+        return _unknown("Длинная подпись не подтверждена вторым кадром")
     if count == 1 and len(results) > 1 and float(best.get("confidence") or 0) < 0.8:
         return _unknown("Подпись найдена только на одном кадре с низкой уверенностью")
-    display = " ".join(str(best["speaker_label"]).split())
     return {
         "status": "detected",
         "speaker_label": display,
@@ -524,6 +526,10 @@ def _group_pending_segments(
 
 def _normalize_label(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).split()).casefold()
+
+
+def _label_needs_confirmation(value: str) -> bool:
+    return len(value) > 12 or len(value.split()) > 1
 
 
 def _unknown(reason: str) -> dict[str, Any]:
