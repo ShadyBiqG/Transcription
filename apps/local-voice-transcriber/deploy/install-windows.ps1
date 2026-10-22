@@ -43,6 +43,11 @@ function Ensure-EnvironmentValue(
     $rewritten | Set-Content -LiteralPath $EnvironmentFile -Encoding utf8
 }
 
+function Test-OnnxRuntimeImport([string]$UvPath, [string]$ApplicationRoot) {
+    & $UvPath run --project $ApplicationRoot --no-sync python -c "import onnxruntime; print(onnxruntime.__version__)" 2>$null
+    return $LASTEXITCODE -eq 0
+}
+
 $appRoot = (Resolve-Path -LiteralPath $RepositoryPath).Path
 if (-not (Test-Path -LiteralPath (Join-Path $appRoot "pyproject.toml") -PathType Leaf)) {
     throw "Transcription Next pyproject.toml was not found in $appRoot"
@@ -67,6 +72,17 @@ if ($LASTEXITCODE -ne 0) {
 & $uv sync --project $appRoot --locked --no-dev
 if ($LASTEXITCODE -ne 0) {
     throw "Could not install the application dependencies."
+}
+
+if (-not (Test-OnnxRuntimeImport $uv $appRoot)) {
+    $runtimePrerequisiteInstaller = Join-Path $PSScriptRoot "install-onnxruntime-prerequisite.ps1"
+    if (-not (Test-Path -LiteralPath $runtimePrerequisiteInstaller -PathType Leaf)) {
+        throw "The ONNX Runtime prerequisite installer was not found: $runtimePrerequisiteInstaller"
+    }
+    & $runtimePrerequisiteInstaller -DataRoot $dataRoot
+    if ($LASTEXITCODE -ne 0 -or -not (Test-OnnxRuntimeImport $uv $appRoot)) {
+        throw "ONNX Runtime could not load after the Microsoft Visual C++ Runtime installation."
+    }
 }
 
 $modelInstaller = Join-Path $PSScriptRoot "install-default-model-packs.ps1"

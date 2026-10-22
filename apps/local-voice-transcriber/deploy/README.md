@@ -46,6 +46,13 @@ extractor локально. Это первая загрузка примерн�
 приложения и не сохраняет пароль в файле конфигурации. Для unattended-установки
 передайте BootstrapAdminLogin и BootstrapAdminPassword (SecureString).
 
+Перед загрузкой моделей установщик проверяет импорт ONNX Runtime. Если Windows
+не содержит нужный Microsoft Visual C++ Runtime, он скачивает официальный
+`vc_redist.x64.exe`, проверяет подпись Microsoft и запускает его с параметрами
+`/install /quiet /norestart`. Для этого потребуется подтверждение UAC. Если
+установщик Microsoft потребует перезагрузку, перезагрузите сервер и повторите
+ту же команду установки.
+
 Назначьте отдельную service account без ACL на legacy data.
 `NEXT_COOKIE_SECURE=true` предполагает HTTPS перед reverse proxy; прямой
 HTTP-доступ к 8010 предназначен только для локальной диагностики.
