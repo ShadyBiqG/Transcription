@@ -17,6 +17,14 @@ from .config import Settings
 from .database import Database, session_expiry
 
 LOGIN_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{2,63}$")
+EMAIL_LOGIN_PATTERN = re.compile(
+    r"^(?P<local>[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*)"
+    r"@(?P<domain>(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)$",
+    re.ASCII,
+)
+LOGIN_MAXIMUM_LENGTH = 254
+EMAIL_LOCAL_PART_MAXIMUM_LENGTH = 64
 PASSWORD_MINIMUM_LENGTH = 12
 
 
@@ -37,16 +45,22 @@ class ApiError(Exception):
 
 
 def normalize_login(login: str) -> str:
-    """Проверяет и канонизирует публичный логин."""
+    """Проверяет и канонизирует логин или адрес электронной почты."""
 
     normalized = login.strip().casefold()
-    if not LOGIN_PATTERN.fullmatch(normalized):
+    email_match = EMAIL_LOGIN_PATTERN.fullmatch(normalized)
+    email_is_valid = (
+        email_match is not None
+        and len(normalized) <= LOGIN_MAXIMUM_LENGTH
+        and len(email_match.group("local")) <= EMAIL_LOCAL_PART_MAXIMUM_LENGTH
+    )
+    if not LOGIN_PATTERN.fullmatch(normalized) and not email_is_valid:
         raise ApiError(
             422,
             "invalid_login",
             (
-                "Логин должен содержать от 3 до 64 латинских букв, цифр, точки, "
-                "дефисы или подчёркивания"
+                "Укажите логин из 3–64 латинских букв, цифр, точки, дефиса или "
+                "подчёркивания либо корректный адрес электронной почты"
             ),
         )
     return normalized

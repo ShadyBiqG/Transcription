@@ -24,6 +24,13 @@ def test_login_is_normalized() -> None:
     assert normalize_login("  Admin.Local  ") == "admin.local"
 
 
+def test_email_login_is_normalized() -> None:
+    assert (
+        normalize_login("  Admin.Team@Example-Company.test  ")
+        == "admin.team@example-company.test"
+    )
+
+
 def test_short_password_is_rejected() -> None:
     with pytest.raises(ApiError) as error:
         validate_password("x" * (PASSWORD_MINIMUM_LENGTH - 1))
@@ -31,7 +38,10 @@ def test_short_password_is_rejected() -> None:
     assert error.value.code == "weak_password"
 
 
-@pytest.mark.parametrize("login", ["ab", "bad space", "кириллица", "admin@host"])
+@pytest.mark.parametrize(
+    "login",
+    ["ab", "bad space", "кириллица", "admin@host", "admin..team@example.test", "a@b"],
+)
 def test_invalid_login_is_rejected(login: str) -> None:
     with pytest.raises(ApiError) as error:
         normalize_login(login)

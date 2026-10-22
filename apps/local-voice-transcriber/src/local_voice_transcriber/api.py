@@ -74,7 +74,7 @@ from .voice.service import VoiceDirectoryService
 
 
 class CredentialsRequest(BaseModel):
-    login: str = Field(min_length=1, max_length=64)
+    login: str = Field(min_length=1, max_length=254)
     password: str = Field(min_length=1, max_length=256)
 
 

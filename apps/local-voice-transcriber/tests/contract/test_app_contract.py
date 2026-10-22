@@ -17,20 +17,20 @@ def test_health_and_readiness_are_public_and_do_not_disclose_paths(client: TestC
         assert body["checks"]["database"] == "ok"
 
 
-def test_self_registration_creates_only_user_without_email_or_role(client: TestClient) -> None:
+def test_self_registration_accepts_email_login_and_creates_only_user(client: TestClient) -> None:
     response = client.post(
         "/api/v1/auth/register",
         json={
-            "login": "New.User",
+            "login": "New.User@Example.test",
             "password": "correct horse battery",
             "role": "admin",
-            "email": "x@y.z",
+            "email": "ignored@example.test",
         },
     )
 
     assert response.status_code == 201
     user = response.json()["user"]
-    assert user["login"] == "new.user"
+    assert user["login"] == "new.user@example.test"
     assert user["role"] == "user"
     assert "email" not in user
 
@@ -49,6 +49,18 @@ def test_login_uses_isolated_http_only_session_and_csrf_cookie(client: TestClien
     assert "local_voice_transcriber_csrf=" in set_cookie
     assert client.cookies.get("local_voice_transcriber_csrf")
     assert client.get("/api/v1/auth/me").status_code == 200
+
+
+def test_login_accepts_email_identifier(client: TestClient) -> None:
+    register(client, "operator@example.test")
+
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"login": "Operator@Example.test", "password": "correct horse battery"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["user"]["login"] == "operator@example.test"
 
 
 def test_state_change_requires_valid_csrf(client: TestClient) -> None:

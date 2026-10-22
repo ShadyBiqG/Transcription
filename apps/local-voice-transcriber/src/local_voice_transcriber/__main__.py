@@ -18,7 +18,11 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Transcription Next")
     parser.add_argument("--host", help="Адрес прослушивания кандидата")
     parser.add_argument("--port", type=int, help="Порт прослушивания кандидата")
-    parser.add_argument("--create-admin", metavar="LOGIN", help="Создать локального администратора")
+    parser.add_argument(
+        "--create-admin",
+        metavar="LOGIN_OR_EMAIL",
+        help="Создать локального администратора",
+    )
     return parser
 
 
