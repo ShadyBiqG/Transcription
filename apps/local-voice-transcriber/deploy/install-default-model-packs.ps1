@@ -93,7 +93,7 @@ New-Item -ItemType Directory -Force -Path $modelsRoot, $toolsRoot, $stagingRoot 
 $asrDirectoryName = "asr/gigaam-v3-ctc-322c3b29"
 $asrFiles = [ordered]@{
     "config.json" = "0641fcf73f4af791c73f05083e38a658ff5dcbee3534a0c61396c10f4b97f0fe"
-    "v3_ctc.onnx" = "1fb978d4f41e1334003fae9e29f2d9844d4132315a90553a4b986839051ba9d3"
+    "v3_ctc.onnx" = "1fb978d4f41e1334003fae9d29f2d9844d4132315a90553a4b986839051ba9d3"
     "v3_vocab.txt" = "a9143c30844d3c0bee3e9e927e4084774eb1b9eeaafc473b2c4521e4911a7c07"
 }
 $vadDirectoryName = "vad/silero-v6-b3e3ee3c"
