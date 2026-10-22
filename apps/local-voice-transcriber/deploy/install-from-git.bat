@@ -133,9 +133,19 @@ goto :end
 
 :run_installer
 echo Starting the isolated Transcription Next installer...
+call :stop_candidate_service
+if errorlevel 1 goto :service_stop_failed
 powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALLER_PATH%" -RepositoryPath "%APPLICATION_ROOT%" -DataPath "%DATA_PATH%" -Port %PORT%
 if not errorlevel 1 goto :run_service_installer
 call :fail "The PowerShell installer failed. The legacy application was not changed."
+goto :end
+
+:stop_candidate_service
+powershell -NoProfile -Command "$service = Get-Service -Name 'TranscriptionNextCandidateService' -ErrorAction SilentlyContinue; if ($null -ne $service -and $service.Status -eq 'Running') { Stop-Service -Name 'TranscriptionNextCandidateService' -ErrorAction Stop; $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30)) }"
+exit /b %errorlevel%
+
+:service_stop_failed
+call :fail "The existing Transcription Next service could not be stopped for a safe update."
 goto :end
 
 :run_service_installer

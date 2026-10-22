@@ -139,13 +139,33 @@ New-Item -ItemType Directory -Force -Path $dataRoot, (Join-Path $dataRoot "jobs"
 Assert-ResolvableWindowsAccount $ServiceAccount
 Grant-DataRootModifyAccess $dataRoot $ServiceAccount
 
-& $uv python install 3.12
-if ($LASTEXITCODE -ne 0) {
-    throw "Could not prepare Python 3.12."
+$pythonInstallationRoot = Join-Path $dataRoot "python-runtime"
+$virtualEnvironmentPath = Join-Path $appRoot ".venv"
+$hadPythonInstallationRoot = Test-Path Env:UV_PYTHON_INSTALL_DIR
+$previousPythonInstallationRoot = $env:UV_PYTHON_INSTALL_DIR
+try {
+    # The service cannot rely on a Python runtime stored in an interactive user's profile.
+    $env:UV_PYTHON_INSTALL_DIR = $pythonInstallationRoot
+    & $uv python install 3.12
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not prepare the isolated Python 3.12 runtime."
+    }
+    & $uv venv $virtualEnvironmentPath --clear --python 3.12
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not create the candidate virtual environment."
+    }
+    & $uv sync --project $appRoot --locked --no-dev
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not install the application dependencies."
+    }
 }
-& $uv sync --project $appRoot --locked --no-dev
-if ($LASTEXITCODE -ne 0) {
-    throw "Could not install the application dependencies."
+finally {
+    if ($hadPythonInstallationRoot) {
+        $env:UV_PYTHON_INSTALL_DIR = $previousPythonInstallationRoot
+    }
+    else {
+        Remove-Item Env:UV_PYTHON_INSTALL_DIR -ErrorAction SilentlyContinue
+    }
 }
 
 if (-not (Test-OnnxRuntimeImport $uv $appRoot)) {
