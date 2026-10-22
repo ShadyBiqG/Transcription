@@ -14,6 +14,17 @@
 install-from-git.bat "<URL Git-репозитория>" "C:\Services\TranscriptionNext" "C:\ProgramData\TranscriptionNext" "<опубликованная-ветка-кандидата>"
 ```
 
+При запуске из PowerShell указывайте команду первой. Самый надёжный вариант —
+одна строка без символов переноса:
+
+```powershell
+& "C:\Users\AI\install-from-git.bat" "https://github.com/ShadyBiqG/Transcription.git" "C:\Services\TranscriptionNext" "C:\ProgramData\TranscriptionNext" "codex/transcription-next"
+```
+
+Сам BAT намеренно содержит только ASCII-символы: `cmd.exe` может разобрать
+файл раньше, чем применит смену кодовой страницы, и тогда кириллица в нём
+приводит к ложным командам.
+
 Первые четыре аргумента обязательны: URL, новый каталог для clone, отдельный
 data root и branch. Не указывайте каталог legacy-приложения ни как clone, ни
 как data root. После опубликования новой версии повторите ту же команду с
