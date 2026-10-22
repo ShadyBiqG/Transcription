@@ -44,8 +44,15 @@ function Ensure-EnvironmentValue(
 }
 
 function Test-OnnxRuntimeImport([string]$UvPath, [string]$ApplicationRoot) {
-    & $UvPath run --project $ApplicationRoot --no-sync python -c "import onnxruntime; print(onnxruntime.__version__)" 2>$null
-    return $LASTEXITCODE -eq 0
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $UvPath run --project $ApplicationRoot --no-sync python -c "import onnxruntime" 1>$null 2>$null
+        return $LASTEXITCODE -eq 0
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
 }
 
 $appRoot = (Resolve-Path -LiteralPath $RepositoryPath).Path
