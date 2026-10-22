@@ -264,6 +264,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.asr_pack_id = ""
     app.state.asr_unavailable_reason = "Локальный ASR model pack не настроен"
     app.state.asr_dispatcher = None
+    app.state.dispatcher_status = lambda: (
+        app.state.asr_dispatcher.state if app.state.asr_dispatcher is not None else "stopped"
+    )
     app.state.voice_pack_id = None
     app.state.voice_diarization_ready = False
     app.state.voice_diarization_reason = "Локальный voice pack не настроен"
@@ -290,8 +293,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
         )
 
-    def public_health() -> JSONResponse:
-        payload, is_ready = health_payload(application_settings, database)
+    def public_health(*, require_worker: bool = False) -> JSONResponse:
+        payload, is_ready = health_payload(
+            application_settings,
+            database,
+            worker_state=app.state.dispatcher_status(),
+            require_worker=require_worker,
+        )
         return JSONResponse(
             status_code=status.HTTP_200_OK if is_ready else status.HTTP_503_SERVICE_UNAVAILABLE,
             content=payload,
@@ -305,7 +313,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/ready", tags=["service"])
     @app.get("/api/v1/ready", tags=["service"])
     def get_ready() -> JSONResponse:
-        return public_health()
+        return public_health(require_worker=True)
 
     static_root = Path(__file__).with_name("static")
     app.mount("/static", StaticFiles(directory=static_root), name="static")
@@ -465,7 +473,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def admin_overview(admin: AdminDependency) -> dict[str, object]:
         """Возвращает только агрегированные технические данные без content jobs."""
 
-        health, _ = health_payload(application_settings, database)
+        worker_state = app.state.dispatcher_status()
+        health, _ = health_payload(
+            application_settings, database, worker_state=worker_state
+        )
         vector_store_status = vector_store.status()
         users = database.list_users()
         return {
@@ -482,11 +493,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "availability": vector_store_status.availability,
                 "reason": vector_store_status.reason,
             },
-            "queue": {"configured": True, "worker": "not_configured"},
+            "queue": {"configured": True, "worker": worker_state},
             "asr": {
-                "ready": app.state.asr_ready,
+                "ready": app.state.asr_ready and worker_state == "running",
                 "pack_id": app.state.asr_pack_id or None,
-                "reason": app.state.asr_unavailable_reason,
+                "reason": app.state.asr_unavailable_reason
+                or ("Локальный worker недоступен" if worker_state != "running" else None),
             },
             "diarization": {
                 "ready": app.state.voice_diarization_ready,

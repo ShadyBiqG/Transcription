@@ -4,12 +4,21 @@
   const api = "/api/v1";
   const state = {
     csrf: "", editor: null, user: null, generation: 0, editorGeneration: 0,
-    jobsTimer: null, jobsGeneration: 0, pendingRuns: new Set(), authBusy: false,
+    jobsTimer: null, jobsGeneration: 0, jobs: [], pendingRuns: new Set(), authBusy: false,
   };
   const byId = (id) => document.getElementById(id);
   const statusLabels = {
     uploaded: "Загружена", queued: "В очереди", processing: "Обрабатывается",
     ready: "Готова", failed: "Ошибка обработки", cancelled: "Отменена", stalled: "Обработка прервана",
+  };
+  const stageLabels = {
+    extracting_audio: "Подготовка аудио", asr: "Распознавание речи",
+    diarizing: "Разделение говорящих", matching: "Сопоставление голосов",
+    publishing: "Публикация результата",
+  };
+  const workerLabels = {
+    running: "работает", degraded: "восстанавливается", idle: "ожидает",
+    stopped: "остановлен", not_configured: "не настроен",
   };
 
   class StaleSessionError extends Error {}
@@ -58,6 +67,7 @@
     byId("subtitle-line").textContent = "Субтитры появятся после обработки.";
     document.querySelector(".waveform span").style.width = "0%";
     byId("save-editor-button").disabled = true;
+    byId("editor-conflict").hidden = true;
     byId("groups-list").replaceChildren();
     byId("transcript-list").replaceChildren();
   }
@@ -67,6 +77,7 @@
     state.csrf = "";
     state.user = null;
     state.pendingRuns.clear();
+    state.jobs = [];
     clearTimeout(state.jobsTimer);
     clearEditor();
     ["jobs-list", "profiles-list", "vocabulary-list", "admin-users", "admin-overview"].forEach((id) => byId(id).replaceChildren());
@@ -129,7 +140,11 @@
     if (!response.ok) {
       const revision = body.details?.current_revision_number;
       const suffix = revision ? " Текущая ревизия: " + revision + "." : "";
-      throw new Error((body.message || "Не удалось выполнить запрос.") + suffix);
+      const error = new Error((body.message || "Не удалось выполнить запрос.") + suffix);
+      error.status = response.status;
+      error.code = body.code;
+      error.details = body.details;
+      throw error;
     }
     return body;
   }
@@ -171,6 +186,61 @@
     player.play().catch(() => {});
   }
 
+  function editorChanges(editor = state.editor) {
+    if (!editor?.revision) return { segmentTexts: {}, groupUpdates: {} };
+    const segmentTexts = {};
+    editor.revision.segments.forEach((segment) => {
+      const input = Array.from(document.querySelectorAll(".transcript-edit"))
+        .find((item) => item.dataset.segmentId === segment.source_segment_id);
+      if (input && input.value !== segment.text) segmentTexts[segment.source_segment_id] = input.value;
+    });
+    const groupUpdates = {};
+    editor.revision.groups.forEach((group) => {
+      const row = Array.from(document.querySelectorAll(".group-editor"))
+        .find((item) => item.dataset.groupId === group.speaker_group_id);
+      if (!row) return;
+      const label = row.querySelector(".group-label-input").value.trim();
+      const profileId = row.querySelector(".group-profile-select").value || null;
+      const decision = editor.decisions.get(group.speaker_group_id);
+      if (label && (label !== group.label || profileId !== group.profile_id || decision)) {
+        groupUpdates[group.speaker_group_id] = {
+          label_snapshot: label, profile_id: decision === "rejected" ? null : profileId,
+          assignment_status: decision || (profileId !== group.profile_id
+            ? (profileId ? "confirmed" : "unknown") : group.assignment_status),
+          provenance: "manual",
+        };
+      }
+    });
+    return { segmentTexts, groupUpdates };
+  }
+
+  function hasEditorChanges(editor = state.editor) {
+    const changes = editorChanges(editor);
+    return Boolean(Object.keys(changes.segmentTexts).length || Object.keys(changes.groupUpdates).length);
+  }
+
+  function setEditorBusy(editor, busy) {
+    if (state.editor !== editor) return;
+    editor.saving = busy;
+    const controls = document.querySelectorAll("#editor-view textarea, #editor-view input, #editor-view select, #editor-view button");
+    if (busy) editor.disabledControls = new Map();
+    controls.forEach((control) => {
+      if (busy) {
+        editor.disabledControls.set(control, control.disabled);
+        control.disabled = true;
+      } else if (editor.disabledControls.has(control)) {
+        control.disabled = editor.disabledControls.get(control);
+      }
+    });
+    if (!busy) editor.disabledControls = null;
+  }
+
+  function jobStatusText(job) {
+    const stage = job.current_run?.stage;
+    return (statusLabels[job.status] || "Неизвестный статус") +
+      (stage && ["queued", "processing"].includes(job.status) ? " · " + (stageLabels[stage] || stage) : "");
+  }
+
   function renderJobs(items) {
     const list = byId("jobs-list");
     list.replaceChildren();
@@ -185,14 +255,38 @@
       const status = text("small", (statusLabels[job.status] || "Неизвестный статус") + " · " + (job.updated_at || ""));
       status.className = "status-" + job.status;
       detail.append(text("strong", job.source_name), status);
+      const run = job.current_run || job.runs?.find((item) => item.id === job.current_run_id);
+      if (run?.stage) detail.append(text("small", "Этап: " + (stageLabels[run.stage] || run.stage)));
+      if (run?.attempt && run?.max_attempts) {
+        detail.append(text("small", "Попытка " + run.attempt + " из " + run.max_attempts));
+      }
+      if (run?.error_code) detail.append(text("small", "Ошибка: " + run.error_code));
       const actions = document.createElement("div");
       actions.className = "job-actions";
       if (["uploaded", "failed", "cancelled", "stalled"].includes(job.status)) {
-        const run = text("button", state.pendingRuns.has(job.id) ? "Запуск…" : "Транскрибировать");
-        run.type = "button";
-        run.disabled = state.pendingRuns.has(job.id);
-        run.addEventListener("click", () => startRun(job, run));
-        actions.append(run);
+        const start = text("button", state.pendingRuns.has(job.id) ? "Запуск…" : job.status === "uploaded" ? "Транскрибировать" : "Повторить обработку");
+        start.type = "button";
+        start.disabled = state.pendingRuns.has(job.id);
+        start.addEventListener("click", () => startRun(job, start));
+        actions.append(start);
+      }
+      if (["queued", "processing"].includes(job.status)) {
+        const cancel = text("button", run?.cancel_requested ? "Отмена запрошена" : "Отменить");
+        cancel.type = "button";
+        cancel.className = "secondary";
+        cancel.disabled = Boolean(run?.cancel_requested);
+        cancel.addEventListener("click", async () => {
+          cancel.disabled = true;
+          try {
+            await request("/jobs/" + encodeURIComponent(job.id) + "/cancel", { method: "POST" });
+            notify("Отмена обработки запрошена.");
+            await loadJobs();
+          } catch (error) {
+            showError(error);
+            cancel.disabled = false;
+          }
+        });
+        actions.append(cancel);
       }
       const button = text("button", "Открыть");
       button.type = "button";
@@ -243,12 +337,39 @@
     clearTimeout(state.jobsTimer);
     const generation = state.generation;
     const load = ++state.jobsGeneration;
-    const data = await request("/jobs");
-    requireGeneration(generation);
-    if (load !== state.jobsGeneration) return;
-    renderJobs(data.items || []);
-    if ((data.items || []).some((job) => ["queued", "processing"].includes(job.status))) {
-      state.jobsTimer = setTimeout(() => { loadJobs().catch(showError); }, 4000);
+    let failed = true;
+    try {
+      const items = [];
+      let cursor = null;
+      const seen = new Set();
+      do {
+        const data = await request("/jobs?limit=50" + (cursor ? "&cursor=" + encodeURIComponent(cursor) : ""));
+        requireGeneration(generation);
+        items.push(...(Array.isArray(data) ? data : data.items || []));
+        cursor = Array.isArray(data) ? null : data.next_cursor || null;
+        if (cursor && seen.has(cursor)) throw new Error("Сервер повторил страницу списка записей.");
+        if (cursor) seen.add(cursor);
+      } while (cursor);
+      if (load !== state.jobsGeneration) return;
+      state.jobs = items;
+      renderJobs(items);
+      failed = false;
+      const opened = state.editor;
+      const current = items.find((job) => job.id === opened?.jobId);
+      if (current) {
+        opened.job = current;
+        byId("editor-status").textContent = jobStatusText(current);
+        if (current.status === "ready" && !opened.revision && !opened.loading && !hasEditorChanges(opened)) {
+          refreshEditor(opened).catch(showError);
+        }
+      }
+    } finally {
+      if (load === state.jobsGeneration && generation === state.generation &&
+          (failed || state.jobs.some((job) => ["queued", "processing"].includes(job.status)) ||
+           ["queued", "processing"].includes(state.editor?.job?.status) ||
+           (state.editor?.job?.status === "ready" && !state.editor.revision))) {
+        state.jobsTimer = setTimeout(() => { loadJobs().catch(showError); }, 4000);
+      }
     }
   }
 
@@ -300,8 +421,30 @@
     const [overview, users] = await Promise.all([request("/admin/overview"), request("/admin/users")]);
     requireGeneration(generation);
     if (state.user?.role !== "admin") return;
-    byId("admin-overview").textContent = JSON.stringify(overview, null, 2);
+    renderAdminOverview(overview);
     renderAdminUsers(users.items || []);
+  }
+
+  function renderAdminOverview(overview) {
+    const container = byId("admin-overview");
+    container.replaceChildren();
+    const cards = [
+      ["Сервис", overview.checks?.database === "ok" ? "Доступен" : "Требует проверки", "База данных: " + (overview.checks?.database === "ok" ? "доступна" : "нет данных или ошибка")],
+      ["Пользователи", String(overview.users_active ?? overview.users_count ?? "—") + " активных", "Всего: " + (overview.users_total ?? "—")],
+      ["Записи", String(overview.recordings_total ?? "—"), Object.entries(overview.recordings_by_status || overview.by_status || {}).map(([key, value]) => (statusLabels[key] || key) + ": " + value).join(" · ")],
+      ["Очередь", String(overview.queue?.queued ?? overview.by_status?.queued ?? "—") + " ожидают", "Обрабатываются: " + (overview.queue?.processing ?? overview.by_status?.processing ?? "—") + " · Обработчик: " + (workerLabels[overview.queue?.worker || overview.checks?.worker] || overview.queue?.worker || overview.checks?.worker || "нет данных")],
+      ["ASR", overview.asr?.ready ? "Готов" : "Не готов", overview.asr?.reason || overview.asr?.pack_id || "Нет сведений о модели"],
+      ["Диаризация", overview.diarization?.ready ? "Готова" : "Не готова", overview.diarization?.reason || overview.diarization?.pack_id || "Нет сведений о модели"],
+      ["Голосовой индекс", overview.voice_index?.ready ? "Готов" : "Не готов", overview.voice_index?.reason || overview.voice_vector_store?.availability || "Нет сведений"],
+      ["Голосовые профили", String(overview.active_voice_profiles ?? "—"), "Активных профилей"],
+    ];
+    cards.forEach(([title, value, detail]) => {
+      const card = document.createElement("div");
+      card.className = "overview-item";
+      card.append(text("h4", title), text("strong", value));
+      if (detail) card.append(text("small", detail));
+      container.append(card);
+    });
   }
 
   function renderAdminUsers(users) {
@@ -363,12 +506,22 @@
       const seekButton = text("button", timing ? formatTime(timing.start_ms) : "—");
       seekButton.type = "button";
       seekButton.className = "timestamp";
+      seekButton.dataset.segmentId = segment.source_segment_id;
       seekButton.disabled = !timing;
       if (timing) seekButton.addEventListener("click", () => seek(timing.start_ms));
       const body = document.createElement("div");
       body.className = "transcript-body";
-      const speaker = editor.groupById.get(segment.primary_group_id);
-      body.append(text("small", speaker?.label || "Неизвестный говорящий"));
+      const groupIds = segment.speaker_group_ids?.length ? segment.speaker_group_ids :
+        segment.primary_group_id ? [segment.primary_group_id] : [];
+      body.append(text("small", groupIds.length
+        ? "Говорящие: " + groupIds.map((id) => editor.groupById.get(id)?.label || id).join(" · ")
+        : "Неизвестный говорящий"));
+      if (segment.requires_review || groupIds.length > 1) {
+        const badge = text("span", "Одновременная речь — проверить");
+        badge.className = "review-badge";
+        body.append(badge);
+        row.classList.add("requires-review");
+      }
       const input = document.createElement("textarea");
       input.className = "transcript-edit";
       input.dataset.segmentId = segment.source_segment_id;
@@ -376,6 +529,31 @@
       input.value = segment.text;
       input.setAttribute("aria-label", "Текст реплики");
       body.append(input);
+      const suggestions = editor.suggestions?.filter((item) => item.source_segment_id === segment.source_segment_id) || [];
+      suggestions.forEach((suggestion) => {
+        const button = text("button", "Подставить «" + suggestion.canonical + "» вместо «" + suggestion.matched_variant + "»");
+        button.type = "button";
+        button.className = "secondary suggestion-button";
+        button.addEventListener("click", () => {
+          if (editor.saving) return;
+          const start = suggestion.start_offset;
+          const end = suggestion.end_offset;
+          if (Number.isInteger(start) && Number.isInteger(end) &&
+              input.value.slice(start, end).localeCompare(
+                suggestion.matched_variant, undefined, { sensitivity: "accent" },
+              ) === 0) {
+            input.value = input.value.slice(0, start) + suggestion.canonical + input.value.slice(end);
+          } else if (!Number.isInteger(start) && input.value.includes(suggestion.matched_variant)) {
+            input.value = input.value.replace(suggestion.matched_variant, suggestion.canonical);
+          } else {
+            notify("Текст реплики уже изменён. Проверьте подсказку вручную.", true);
+            return;
+          }
+          button.disabled = true;
+          notify("Подсказка внесена в черновик. Сохраните правки.");
+        });
+        body.append(button);
+      });
       row.append(seekButton, body);
       list.append(row);
     });
@@ -421,6 +599,18 @@
             : "Локальная группа · " + (assignmentLabels[group.assignment_status] || "не определён"),
         ),
       );
+      const context = editor.revision.segments.filter((segment) =>
+        segment.speaker_group_ids?.includes(group.speaker_group_id));
+      const overlaps = context.filter((segment) => segment.requires_review || segment.speaker_group_ids?.length > 1).length;
+      row.append(text("small", "Реплик: " + context.length + " · На проверку: " + overlaps +
+        " · Источник: " + (group.provenance || "не указан")));
+      if (context.length) row.append(text("small", "Первый фрагмент: " + context[0].text));
+      (group.candidates || []).slice(0, 3).forEach((candidate) => {
+        const profileName = editor.profiles.find((item) => item.id === candidate.profile_id)?.display_name || "Профиль недоступен";
+        const distance = Number.isFinite(candidate.distance) ? " · расстояние " + candidate.distance : "";
+        row.append(text("small", "Кандидат: " + profileName + distance +
+          (candidate.reason ? " · " + candidate.reason : "")));
+      });
       const name = document.createElement("input");
       name.className = "group-label-input";
       name.value = group.label;
@@ -431,7 +621,17 @@
       profileOptions(profile, group.profile_id);
       const enroll = text("button", "Добавить образец голоса");
       enroll.type = "button";
-      enroll.disabled = Boolean(group.merged_into_group_id);
+      enroll.className = "secondary enroll-sample";
+      enroll.dataset.eligible = String(!group.merged_into_group_id && group.assignment_status === "confirmed" && Boolean(group.profile_id));
+      const consent = document.createElement("input");
+      consent.type = "checkbox";
+      consent.checked = false;
+      const consentLabel = document.createElement("label");
+      consentLabel.className = "sample-consent";
+      consentLabel.append(consent, text("span", "После проверки качества добавить мой фрагмент в общий профиль"));
+      consent.disabled = enroll.dataset.eligible !== "true";
+      enroll.disabled = true;
+      consent.addEventListener("change", () => { enroll.disabled = !consent.checked || enroll.dataset.eligible !== "true"; });
       enroll.addEventListener("click", async () => {
         if (enroll.disabled || state.editor !== editor) return;
         const profileId = profile.value;
@@ -457,13 +657,40 @@
               ? "Образец добавлен в общий голосовой индекс."
               : "Образец сохранён; общий голосовой индекс повторит обработку автоматически.",
           );
+          consent.checked = false;
         } catch (error) {
           showError(error);
         } finally {
-          if (state.editor === editor) enroll.disabled = Boolean(group.merged_into_group_id);
+          if (state.editor === editor) enroll.disabled = !consent.checked || enroll.dataset.eligible !== "true";
         }
       });
-      row.append(name, profile, enroll);
+      row.append(name, profile);
+      profile.addEventListener("change", () => { editor.decisions.delete(group.speaker_group_id); });
+      if (["candidate", "ambiguous", "auto_assigned"].includes(group.assignment_status)) {
+        const decisions = document.createElement("div");
+        decisions.className = "group-decisions";
+        const pending = text("small", "Решение не подтверждено вручную.");
+        const confirm = text("button", "Подтвердить");
+        confirm.type = "button";
+        confirm.addEventListener("click", () => {
+          if (!profile.value) {
+            notify("Выберите профиль перед подтверждением.", true);
+            return;
+          }
+          editor.decisions.set(group.speaker_group_id, "confirmed");
+          pending.textContent = "Подтверждение ожидает сохранения.";
+        });
+        const reject = text("button", "Отклонить");
+        reject.type = "button";
+        reject.className = "secondary";
+        reject.addEventListener("click", () => {
+          editor.decisions.set(group.speaker_group_id, "rejected");
+          pending.textContent = "Отклонение ожидает сохранения.";
+        });
+        decisions.append(confirm, reject, pending);
+        row.append(decisions);
+      }
+      row.append(consentLabel, enroll);
       list.append(row);
     });
   }
@@ -487,82 +714,94 @@
     });
   }
 
-  async function openJob(job) {
-    if (!state.user) return;
+  async function refreshEditor(editor) {
+    if (state.editor !== editor || editor.loading || editor.saving || hasEditorChanges(editor)) return;
+    editor.loading = true;
     const generation = state.generation;
-    clearEditor();
-    const editorGeneration = state.editorGeneration;
-    const isCurrent = () => generation === state.generation && editorGeneration === state.editorGeneration;
-    byId("editor-title").textContent = job.source_name;
-    byId("editor-status").textContent = statusLabels[job.status] || "Неизвестный статус";
-    byId("audio-player").src = api + "/jobs/" + encodeURIComponent(job.id) + "/audio";
-    activateView("editor");
     try {
+      const path = "/jobs/" + encodeURIComponent(editor.jobId);
       const [source, profiles] = await Promise.all([
-        request("/jobs/" + job.id + "/source"),
-        request("/voice-profiles"),
+        request(path + "/source"), request("/voice-profiles"),
       ]);
-      if (!isCurrent()) return;
+      if (generation !== state.generation || state.editor !== editor) return;
       let transcript = null;
       let unavailable = "";
       try {
-        transcript = await request("/jobs/" + job.id + "/transcript");
+        transcript = await request(path + "/transcript");
       } catch (error) {
-        if (error instanceof StaleSessionError || !isCurrent()) return;
+        if (error instanceof StaleSessionError || state.editor !== editor) return;
         unavailable = error.message;
       }
-      if (!isCurrent()) return;
-      state.editor = {
-        jobId: job.id,
-        profiles: profiles.items || [],
-        revision: transcript,
-        timingBySegment: new Map((source.segments || []).map((segment) => [segment.id, segment])),
-        groupById: new Map((transcript?.groups || []).map((group) => [group.speaker_group_id, group])),
-        unavailable,
-      };
+      if (generation !== state.generation || state.editor !== editor || hasEditorChanges(editor)) return;
+      editor.profiles = profiles.items || [];
+      editor.revision = transcript;
+      editor.timingBySegment = new Map((source.segments || []).map((segment) => [segment.id, segment]));
+      editor.groupById = new Map((transcript?.groups || []).map((group) => [group.speaker_group_id, group]));
+      editor.unavailable = unavailable;
+      editor.decisions.clear();
+      editor.suggestions = [];
+      if (transcript?.revision?.number) {
+        try {
+          const suggestions = await request(path + "/vocabulary/suggestions?expected_revision_number=" + transcript.revision.number);
+          if (state.editor === editor && generation === state.generation) editor.suggestions = suggestions.items || [];
+        } catch (error) {
+          if (error instanceof StaleSessionError || state.editor !== editor) return;
+        }
+      }
+      if (state.editor !== editor || generation !== state.generation || hasEditorChanges(editor)) return;
       renderGroups();
       renderTranscript();
       byId("save-editor-button").disabled = !transcript;
       byId("editor-help").textContent = transcript
-        ? "Правки сохраняются отдельной ревизией. Аудио и субтитры синхронизированы."
+        ? "Ревизия " + transcript.revision.number + ". Правки сохраняются новой ревизией; отмеченные наложения требуют проверки."
         : unavailable || "Дождитесь публикации результата обработки.";
     } catch (error) {
-      if (error instanceof StaleSessionError || !isCurrent()) return;
-      state.editor = { unavailable: error.message };
-      renderGroups();
-      renderTranscript();
-      byId("save-editor-button").disabled = true;
+      if (error instanceof StaleSessionError || state.editor !== editor) return;
+      editor.unavailable = error.message;
+      if (!editor.revision && !hasEditorChanges(editor)) {
+        renderGroups();
+        renderTranscript();
+        byId("editor-help").textContent = error.message;
+      }
       showError(error);
+    } finally {
+      editor.loading = false;
     }
+  }
+
+  async function openJob(job) {
+    if (!state.user) return;
+    if (state.editor?.jobId === job.id) {
+      activateView("editor");
+      return;
+    }
+    if (state.editor?.saving) {
+      notify("Дождитесь окончания сохранения правок.", true);
+      return;
+    }
+    if (hasEditorChanges() && !window.confirm("Есть несохранённые правки. Открыть другую запись и потерять их?")) return;
+    clearEditor();
+    const editor = {
+      jobId: job.id, job, profiles: [], revision: null, timingBySegment: new Map(),
+      groupById: new Map(), decisions: new Map(), suggestions: [], unavailable: "", loading: false, saving: false,
+    };
+    state.editor = editor;
+    byId("editor-title").textContent = job.source_name;
+    byId("editor-status").textContent = jobStatusText(job);
+    byId("audio-player").src = api + "/jobs/" + encodeURIComponent(job.id) + "/audio";
+    activateView("editor");
+    await refreshEditor(editor);
   }
 
   async function saveEditor() {
     const editor = state.editor;
-    if (!editor?.revision || byId("save-editor-button").disabled) return;
-    const segmentTexts = {};
-    editor.revision.segments.forEach((segment) => {
-      const input = document.querySelector(".transcript-edit[data-segment-id='" + CSS.escape(segment.source_segment_id) + "']");
-      if (input && input.value !== segment.text) segmentTexts[segment.source_segment_id] = input.value;
-    });
-    const groupUpdates = {};
-    editor.revision.groups.forEach((group) => {
-      const row = document.querySelector(".group-editor[data-group-id='" + CSS.escape(group.speaker_group_id) + "']");
-      const label = row?.querySelector(".group-label-input")?.value;
-      const profileId = row?.querySelector(".group-profile-select")?.value || null;
-      if (label && (label !== group.label || profileId !== group.profile_id)) {
-        groupUpdates[group.speaker_group_id] = {
-          label_snapshot: label,
-          profile_id: profileId,
-          assignment_status: profileId ? "confirmed" : "unknown",
-          provenance: "manual",
-        };
-      }
-    });
+    if (!editor?.revision || editor.saving || byId("save-editor-button").disabled) return;
+    const { segmentTexts, groupUpdates } = editorChanges(editor);
     if (!Object.keys(segmentTexts).length && !Object.keys(groupUpdates).length) {
       notify("Нет изменений для сохранения.");
       return;
     }
-    byId("save-editor-button").disabled = true;
+    setEditorBusy(editor, true);
     try {
       const result = await request("/jobs/" + editor.jobId + "/transcript", {
         method: "PATCH",
@@ -576,13 +815,20 @@
       if (state.editor !== editor) return;
       editor.revision = result;
       editor.groupById = new Map(result.groups.map((group) => [group.speaker_group_id, group]));
+      editor.decisions.clear();
+      editor.suggestions = [];
+      byId("editor-conflict").hidden = true;
       renderGroups();
       renderTranscript();
       notify("Правки сохранены как ревизия " + result.revision.number + ".");
     } catch (error) {
+      if (state.editor === editor && error.status === 409) {
+        byId("editor-conflict-message").textContent = "Запись изменилась в другой вкладке. Ваши правки остались в редакторе. Скопируйте их перед обновлением. " + error.message;
+        byId("editor-conflict").hidden = false;
+      }
       if (state.editor === editor) showError(error);
     } finally {
-      if (state.editor === editor) byId("save-editor-button").disabled = false;
+      if (state.editor === editor) setEditorBusy(editor, false);
     }
   }
 
@@ -716,6 +962,34 @@
   });
 
   byId("save-editor-button").addEventListener("click", saveEditor);
+  byId("copy-editor-draft").addEventListener("click", async () => {
+    const editor = state.editor;
+    if (!editor?.revision) return;
+    const lines = editor.revision.segments.map((segment) => {
+      const input = Array.from(document.querySelectorAll(".transcript-edit"))
+        .find((item) => item.dataset.segmentId === segment.source_segment_id);
+      return (input?.value ?? segment.text);
+    });
+    const groups = Array.from(document.querySelectorAll(".group-editor")).map((row) => {
+      const label = row.querySelector(".group-label-input")?.value || "";
+      const profile = row.querySelector(".group-profile-select");
+      return label + " — " + (profile?.selectedOptions[0]?.textContent || "Без общего профиля");
+    });
+    try {
+      await navigator.clipboard.writeText("Группы:\n" + groups.join("\n") + "\n\nТекст:\n" + lines.join("\n\n"));
+      notify("Ваши правки скопированы. Теперь можно обновить запись.");
+    } catch (_) {
+      notify("Не удалось скопировать автоматически. Выделите и скопируйте правки в полях редактора.", true);
+    }
+  });
+  byId("reload-editor").addEventListener("click", () => {
+    const editor = state.editor;
+    if (!editor || editor.saving) return;
+    if (hasEditorChanges(editor) && !window.confirm("Обновление удалит несохранённые правки. Продолжить?")) return;
+    const job = editor.job;
+    clearEditor();
+    openJob(job).catch(showError);
+  });
 
   byId("admin-retry-index").addEventListener("click", async () => {
     const button = byId("admin-retry-index");
@@ -739,6 +1013,11 @@
   });
 
   byId("logout-button").addEventListener("click", async () => {
+    if (state.editor?.saving) {
+      notify("Дождитесь окончания сохранения правок.", true);
+      return;
+    }
+    if (hasEditorChanges() && !window.confirm("Есть несохранённые правки. Выйти и потерять их?")) return;
     const csrf = state.csrf;
     clearSession("Сессия завершена");
     setAuthBusy(true);
@@ -772,9 +1051,18 @@
   });
 
   byId("audio-player").addEventListener("timeupdate", (event) => {
-    const timeMs = event.currentTarget.currentTime * 1000;
-    document.querySelector(".waveform span").style.width = Math.min(100, Math.max(0, timeMs / 1000)) + "%";
+    const player = event.currentTarget;
+    const timeMs = player.currentTime * 1000;
+    const percentage = Number.isFinite(player.duration) && player.duration > 0
+      ? player.currentTime / player.duration * 100 : 0;
+    document.querySelector(".waveform span").style.width = Math.min(100, Math.max(0, percentage)) + "%";
     renderSubtitle(timeMs);
+  });
+
+  window.addEventListener("beforeunload", (event) => {
+    if (!state.editor?.saving && !hasEditorChanges()) return;
+    event.preventDefault();
+    event.returnValue = "";
   });
 
   (async () => {

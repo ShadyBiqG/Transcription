@@ -177,6 +177,43 @@ class JobRepository:
             ).fetchall()
         return [_to_job(row) for row in rows]
 
+    def list_jobs_page(
+        self,
+        owner_id: str,
+        *,
+        limit: int = 50,
+        cursor: tuple[str, str] | None = None,
+    ) -> tuple[list[tuple[Job, JobRun | None]], bool]:
+        """Читает страницу заданий и текущие запуски в одном снимке SQLite."""
+
+        if not 1 <= limit <= 100:
+            raise ValueError("limit должен быть от 1 до 100")
+        condition = ""
+        parameters: list[object] = [owner_id]
+        if cursor is not None:
+            condition = " AND (created_at, id) < (?, ?)"
+            parameters.extend(cursor)
+        parameters.append(limit + 1)
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM next_jobs WHERE owner_id = ?" + condition
+                + " ORDER BY created_at DESC, id DESC LIMIT ?",
+                parameters,
+            ).fetchall()
+            has_more = len(rows) > limit
+            rows = rows[:limit]
+            run_ids = [str(row["current_run_id"]) for row in rows if row["current_run_id"]]
+            runs: dict[str, JobRun] = {}
+            if run_ids:
+                placeholders = ", ".join("?" for _ in run_ids)
+                run_rows = connection.execute(
+                    f"SELECT * FROM next_job_runs WHERE id IN ({placeholders})", run_ids
+                ).fetchall()
+                runs = {str(row["id"]): _to_run(row) for row in run_rows}
+        return [
+            (_to_job(row), runs.get(str(row["current_run_id"]))) for row in rows
+        ], has_more
+
     def create_run(
         self,
         *,

@@ -47,6 +47,21 @@
 `{"role":"admin"}` или `{"role":"user"}`. Саморегистрация никогда не
 принимает роль из запроса и всегда создаёт обычного пользователя.
 
+`GET /api/v1/jobs` возвращает только задания текущего владельца. Ответ содержит
+`items` и `next_cursor`; `current_run` включает только статус, этап, попытку и
+безопасный код ошибки. Новая страница запрашивается параметрами `limit` и
+`cursor`. `POST /api/v1/jobs/{job_id}/runs` принимает запись в очередь только
+при готовом ASR-пакете и работающем worker.
+
+`GET /api/v1/jobs/{job_id}/vocabulary/suggestions?expected_revision_number=N`
+возвращает проверяемые предложения терминов для текущей ревизии. Предложение не
+меняет текст: пользователь применяет его в редакторе и явно сохраняет новую
+ревизию. Чужое задание отвечает `404`.
+
+`/health` — liveness-проверка SQLite. `/ready` дополнительно требует
+работающий worker и проверенные локальные model packs; поэтому при остановленном
+или деградировавшем worker он возвращает `503`.
+
 ## Запуск
 
 Требуются Python 3.12 и `uv`. Без переменных окружения используются отдельные
@@ -121,3 +136,27 @@ install-from-git.bat "<URL Git-репозитория>" "C:\Services\Transcripti
 uv run ruff check .
 uv run pytest
 ```
+
+Чтобы не прогонять один и тот же полный набор после каждой небольшой правки,
+используйте целевой набор из `scripts/test-candidate.ps1`:
+
+```powershell
+# HTML, CSS и JavaScript
+.\scripts\test-candidate.ps1 -Suite ui
+
+# Очередь, запуск, recovery и owner-scoped jobs
+.\scripts\test-candidate.ps1 -Suite jobs
+
+# Редактор, ревизии и словарные предложения
+.\scripts\test-candidate.ps1 -Suite editor
+
+# Сессии, CSRF и роли
+.\scripts\test-candidate.ps1 -Suite auth
+
+# Один раз перед push или выпуском
+.\scripts\test-candidate.ps1 -Suite full
+```
+
+Загрузка реальных ASR/VAD/Sherpa-пакетов и FFmpeg остаётся отдельным smoke-test
+установщика. Запускайте его при изменении моделей, зависимостей или deployment,
+а не после обычной правки интерфейса.

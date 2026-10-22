@@ -75,6 +75,7 @@
         </section>
         <section class="view" id="editor-view">
           <div class="view-header"><div><p class="eyebrow">Проверка и исправление</p><h2 id="editor-title">Редактор</h2></div><span class="pill" id="editor-status">Выберите готовую запись</span></div>
+          <div id="editor-conflict" class="notice error" hidden role="alert"><p id="editor-conflict-message"></p><div class="job-actions"><button type="button" id="copy-editor-draft" class="secondary">Скопировать мои правки</button><button type="button" id="reload-editor" class="secondary">Обновить с сервера</button></div></div>
           <div class="editor-layout">
             <section class="card player-card"><div class="waveform" aria-label="Шкала аудио"><span></span></div><audio id="audio-player" controls preload="metadata"></audio><div id="subtitle-line" class="subtitle-line">Субтитры появятся после обработки.</div></section>
             <aside class="card groups-card"><h3>Группы говорящих</h3><p class="muted">Исправьте имя или назначьте общий профиль один раз для всей группы.</p><div id="groups-list"><p class="muted">Нет выбранной записи.</p></div></aside>
@@ -84,7 +85,7 @@
         <section class="view" id="admin-view">
           <div class="view-header"><div><p class="eyebrow">Учётные записи и технические показатели</p><h2>Администрирование</h2></div><button type="button" id="admin-retry-index">Повторить обновление голосового индекса</button></div>
           <section class="card admin-users-card"><h3>Пользователи</h3><p class="muted">Роли, состояние учётных записей и количество записей по статусам.</p><div id="admin-users" class="profile-list" aria-live="polite"></div></section>
-          <pre class="card" id="admin-overview"></pre>
+          <section class="card admin-overview-card" aria-label="Состояние сервиса"><h3>Состояние сервиса</h3><div id="admin-overview" class="admin-overview" aria-live="polite"></div></section>
         </section>
       </section>
     </main>

@@ -1,20 +1,102 @@
 from __future__ import annotations
 
+import sqlite3
+import time
+
+import pytest
 from conftest import login, register
 from fastapi.testclient import TestClient
+
+from local_voice_transcriber import api as api_module
+from local_voice_transcriber.api import create_app
+from local_voice_transcriber.config import Settings
+from local_voice_transcriber.jobs.dispatcher import OneWorkerDispatcher
+
+
+class _NoopProcessor:
+    async def process(self, _job, _run, _cancellation_requested) -> None:
+        return None
+
+
+def _wait_for_worker(client: TestClient, expected: str) -> None:
+    deadline = time.monotonic() + 2
+    while client.app.state.dispatcher_status() != expected and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert client.app.state.dispatcher_status() == expected
 
 
 def test_health_and_readiness_are_public_and_do_not_disclose_paths(client: TestClient) -> None:
     for endpoint in ("/health", "/ready", "/api/v1/health", "/api/v1/ready"):
         response = client.get(endpoint)
 
-        assert response.status_code == 200
+        assert response.status_code == (503 if "ready" in endpoint else 200)
         body = response.json()
-        assert body["status"] == "ok"
+        assert body["status"] == ("error" if "ready" in endpoint else "ok")
         assert body["service"] == "transcription-next"
         assert body["instance_id"] == "test-candidate"
         assert "path" not in str(body).casefold()
         assert body["checks"]["database"] == "ok"
+        assert body["checks"]["worker"] == "stopped"
+
+
+def test_readiness_and_admin_overview_follow_live_worker_state(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def configured_worker(_settings, repository, *_args):
+        dispatcher = OneWorkerDispatcher(
+            repository, _NoopProcessor(), worker_id="test-worker", poll_seconds=0.01
+        )
+        return dispatcher, "verified-pack", None, None, None, None, None
+
+    monkeypatch.setattr(api_module, "_configure_asr_worker", configured_worker)
+
+    with TestClient(create_app(settings)) as client:
+        dispatcher = client.app.state.asr_dispatcher
+        repository = client.app.state.jobs_repository
+        assert dispatcher is not None
+        _wait_for_worker(client, "running")
+        assert client.get("/ready").status_code == 200
+        assert client.get("/ready").json()["checks"]["worker"] == "running"
+
+        registered = client.post(
+            "/api/v1/auth/register",
+            json={"login": "operator", "password": "correct horse battery"},
+        )
+        client.app.state.database.update_user(user_id=registered.json()["user"]["id"], role="admin")
+        login(client, "operator")
+
+        original_claim = repository.claim_next_run
+
+        def temporary_failure(**_kwargs):
+            raise sqlite3.OperationalError("private-content /private/path")
+
+        monkeypatch.setattr(repository, "claim_next_run", temporary_failure)
+        _wait_for_worker(client, "degraded")
+        degraded = client.get("/ready")
+        assert degraded.status_code == 503
+        assert degraded.json()["checks"]["worker"] == "degraded"
+        assert "private-content" not in degraded.text
+        overview = client.get("/api/v1/admin/overview").json()
+        assert overview["queue"]["worker"] == "degraded"
+        assert overview["asr"]["ready"] is False
+        assert "private-content" not in str(overview)
+        assert client.get("/health").status_code == 200
+
+        monkeypatch.setattr(repository, "claim_next_run", original_claim)
+        _wait_for_worker(client, "running")
+        assert client.get("/ready").status_code == 200
+
+        def fatal_failure(**_kwargs):
+            raise RuntimeError("private-content /private/path")
+
+        monkeypatch.setattr(repository, "claim_next_run", fatal_failure)
+        _wait_for_worker(client, "stopped")
+        stopped = client.get("/ready")
+        assert stopped.status_code == 503
+        assert stopped.json()["checks"]["worker"] == "stopped"
+        overview = client.get("/api/v1/admin/overview").json()
+        assert overview["queue"]["worker"] == "stopped"
+        assert overview["asr"]["ready"] is False
 
 
 def test_self_registration_accepts_email_login_and_creates_only_user(client: TestClient) -> None:

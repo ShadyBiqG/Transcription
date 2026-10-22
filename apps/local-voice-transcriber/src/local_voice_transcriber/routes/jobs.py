@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
+import re
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, File, Header, Request, UploadFile, status
+from fastapi import APIRouter, File, Header, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
 
 from ..auth import ApiError, CsrfSessionDependency, SessionDependency
 from ..jobs import Job, JobRepository, JobRun
 from ..jobs.repository import InvalidRunState
+from ..vocabulary.suggestions import suggest_for_revision
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
 _MAX_UPLOAD_BYTES = 512 * 1024 * 1024
@@ -49,6 +55,37 @@ def _run_projection(run: JobRun) -> dict[str, object]:
         "started_at": run.started_at,
         "completed_at": run.completed_at,
     }
+
+
+def _encode_cursor(job: Job) -> str:
+    payload = json.dumps([job.created_at, job.id], separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_cursor(value: str) -> tuple[str, str]:
+    try:
+        if len(value) > 512 or re.fullmatch(r"[A-Za-z0-9_-]+", value) is None:
+            raise ValueError("Недопустимый формат курсора")
+        payload = base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True)
+        decoded = json.loads(payload)
+        if (
+            not isinstance(decoded, list)
+            or len(decoded) != 2
+            or any(not isinstance(item, str) or not item for item in decoded)
+        ):
+            raise ValueError("Недопустимое содержимое курсора")
+        created_at, job_id = decoded
+        if datetime.fromisoformat(created_at).tzinfo is None:
+            raise ValueError("В курсоре отсутствует часовой пояс")
+        return created_at, job_id
+    except (
+        binascii.Error,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        ValueError,
+        TypeError,
+    ) as error:
+        raise ApiError(422, "invalid_cursor", "Некорректный курсор списка заданий") from error
 
 
 def _find_owned_job(repository: JobRepository, job_id: str, owner_id: str) -> Job:
@@ -119,9 +156,22 @@ async def create_job(
 
 
 @router.get("")
-def list_jobs(request: Request, session: SessionDependency) -> dict[str, object]:
+def list_jobs(
+    request: Request,
+    session: SessionDependency,
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: str | None = Query(default=None),
+) -> dict[str, object]:
     repository = _repository(request)
-    return {"items": [_job_projection(job) for job in repository.list_jobs(session.user_id)]}
+    page, has_more = repository.list_jobs_page(
+        session.user_id, limit=limit, cursor=_decode_cursor(cursor) if cursor is not None else None
+    )
+    items = []
+    for job, run in page:
+        item = _job_projection(job)
+        item["current_run"] = _run_projection(run) if run is not None else None
+        items.append(item)
+    return {"items": items, "next_cursor": _encode_cursor(page[-1][0]) if has_more else None}
 
 
 @router.get("/{job_id}")
@@ -130,6 +180,39 @@ def get_job(request: Request, job_id: str, session: SessionDependency) -> dict[s
     job = _find_owned_job(repository, job_id, session.user_id)
     runs = repository.list_runs(job_id=job.id, owner_id=session.user_id)
     return {"job": _job_projection(job, runs)}
+
+
+@router.get("/{job_id}/vocabulary/suggestions")
+def get_vocabulary_suggestions(
+    request: Request,
+    job_id: str,
+    session: SessionDependency,
+    expected_revision_number: int = Query(ge=1),
+) -> dict[str, object]:
+    """Предлагает словарные исправления текущей ревизии без её изменения."""
+
+    _find_owned_job(_repository(request), job_id, session.user_id)
+    try:
+        revision = request.app.state.editor_repository.get_current_revision(
+            owner_id=session.user_id, job_id=job_id
+        )
+    except KeyError as error:
+        raise ApiError(409, "transcript_unavailable", "Транскрипция ещё не опубликована") from error
+    if revision.info.number != expected_revision_number:
+        raise ApiError(
+            409,
+            "revision_conflict",
+            "Транскрипция была изменена; обновите редактор",
+            {
+                "expected_revision_number": expected_revision_number,
+                "current_revision_number": revision.info.number,
+            },
+        )
+    terms = request.app.state.vocabulary_service.list_terms()
+    return {
+        "revision_number": revision.info.number,
+        "items": suggest_for_revision(revision, terms),
+    }
 
 
 @router.post("/{job_id}/runs", status_code=status.HTTP_202_ACCEPTED)
@@ -149,6 +232,8 @@ def create_run(
             "asr_pack_unavailable",
             "Локальный ASR model pack ещё не прошёл проверку готовности",
         )
+    if request.app.state.dispatcher_status() != "running":
+        raise ApiError(503, "worker_unavailable", "Локальный обработчик сейчас недоступен")
     if not idempotency_key or len(idempotency_key) > 128:
         raise ApiError(422, "idempotency_key_required", "Передайте заголовок Idempotency-Key")
     try:

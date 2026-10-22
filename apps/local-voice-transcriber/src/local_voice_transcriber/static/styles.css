@@ -18,6 +18,7 @@ h2 { margin-bottom: .25rem; }
 .session, .pill { color: #bcd0ed; background: #17243a; border-radius: 99px; padding: .45rem .75rem; font-size: .9rem; }
 .notice { padding: .8rem 1rem; margin: 1.5rem 0; border-radius: .7rem; background: #223454; border-left: 4px solid #79a9ff; }
 .notice.error { background: #44242d; border-color: #ff8597; }
+.notice p { margin-bottom: .6rem; }
 .auth-panel { max-width: 480px; margin: 3rem auto; }
 .auth-tabs { display: flex; gap: .5rem; margin-bottom: 1.25rem; }
 .auth-tabs button { flex: 1; background: #26334a; }
@@ -39,6 +40,11 @@ h2 { margin-bottom: .25rem; }
 .upload-form { flex-wrap: wrap; justify-content: flex-end; }
 #selected-media { max-width: 250px; overflow-wrap: anywhere; }
 .admin-users-card { margin: 1.25rem 0; }
+.admin-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: .75rem; }
+.overview-item { display: grid; align-content: start; gap: .35rem; padding: .9rem; border: 1px solid #33445f; border-radius: .7rem; background: #0f192a; overflow-wrap: anywhere; }
+.overview-item h4 { margin: 0; color: #a9bbd5; font-size: .9rem; }
+.overview-item strong { font-size: 1.15rem; }
+.overview-item small { color: #a9bbd5; }
 .admin-user { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1rem; align-items: center; }
 .admin-user strong { overflow-wrap: anywhere; }
 .admin-user p { margin: .5rem 0 0; }
@@ -57,6 +63,14 @@ audio { width: 100%; }.subtitle-line { margin-top: .8rem; min-height: 2rem; font
 .transcript-body small, .group-editor small { color: #a9bbd5; }
 .transcript-edit { resize: vertical; line-height: 1.45; min-height: 3.2rem; }
 .transcript-row.active { border-color: #6da5ff; background: #172844; }
+.transcript-row.requires-review { border-left: 4px solid #f4c36a; }
+.review-badge { display: inline-block; justify-self: start; color: #241700; background: #f4c36a; border-radius: .4rem; padding: .3rem .55rem; font-size: .82rem; font-weight: 750; }
+.group-decisions { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
+.group-decisions small { flex-basis: 100%; }
+.sample-consent { display: flex; align-items: flex-start; gap: .5rem; font-size: .88rem; }
+.sample-consent input { width: auto; margin-top: .2rem; }
+.suggestion-button { justify-self: start; text-align: left; }
 .group-editor { grid-template-columns: 1fr; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid #f4c36a; outline-offset: 2px; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 720px) { .editor-layout, .admin-user, .job { grid-template-columns: 1fr; } .groups-card, .player-card, .transcript-card { grid-column: auto; grid-row: auto; } .topbar, .view-header, .upload-form, .transcript-heading { align-items: flex-start; flex-direction: column; } .inline-form { width: 100%; } .job-actions { justify-content: flex-start; } }
