@@ -43,7 +43,9 @@ uv run local-voice-transcriber --create-admin admin@example.test
 Скрипт `deploy/install-windows.ps1` создаёт отдельный data root, локальное
 окружение, модели и FFmpeg, проверяет их локальную загрузку, а затем при первой
 установке интерактивно создаёт первого администратора. Пароль не записывается в
-конфигурационный файл. Legacy на порту 8000 не изменяется. Подробнее:
+конфигурационный файл. Git-установщик после этого автоматически регистрирует
+автозапускаемую службу Windows `TranscriptionNextCandidateService`. Legacy на
+порту 8000 не изменяется. Подробнее:
 `deploy/README.md`.
 
 Если на сервере ещё нет исходного кода, скопируйте туда один файл
@@ -60,6 +62,10 @@ install-from-git.bat "<URL Git-репозитория>" "C:\Services\Transcripti
 
 Состав автоматически доставляемых и проверяемых ASR/VAD/voice model packs:
 [docs/model-packs.md](docs/model-packs.md).
+
+Запускайте Git-установщик из PowerShell **от имени администратора**: тогда он
+сам зарегистрирует и запустит отдельную автозапускаемую Windows-службу
+`TranscriptionNextCandidateService`. Она не изменяет legacy-службу.
 
 ## Безопасность и изоляция
 

@@ -134,13 +134,26 @@ goto :end
 :run_installer
 echo Starting the isolated Transcription Next installer...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALLER_PATH%" -RepositoryPath "%APPLICATION_ROOT%" -DataPath "%DATA_PATH%" -Port %PORT%
-if not errorlevel 1 goto :complete
+if not errorlevel 1 goto :run_service_installer
 call :fail "The PowerShell installer failed. The legacy application was not changed."
+goto :end
+
+:run_service_installer
+set "SERVICE_INSTALLER_PATH=%APPLICATION_ROOT%\deploy\install-windows-service.ps1"
+if exist "%SERVICE_INSTALLER_PATH%" goto :install_service
+call :fail "The Transcription Next Windows service installer was not found: %SERVICE_INSTALLER_PATH%"
+goto :end
+
+:install_service
+echo Registering the isolated Transcription Next Windows service...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%SERVICE_INSTALLER_PATH%" -ApplicationRoot "%APPLICATION_ROOT%" -DataRoot "%DATA_PATH%"
+if not errorlevel 1 goto :complete
+call :fail "The Transcription Next Windows service installation failed. Run this BAT from an elevated PowerShell session."
 goto :end
 
 :complete
 echo.
-echo Transcription Next installation completed.
+echo Transcription Next installation and Windows service registration completed.
 goto :success
 
 :help

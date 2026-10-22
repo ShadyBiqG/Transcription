@@ -30,7 +30,8 @@ data root и branch. Не указывайте каталог legacy-прило�
 как data root. После опубликования новой версии повторите ту же команду с
 `--update`; перед `git pull --ff-only` BAT проверит origin, ветку и чистоту
 рабочей директории. Любое расхождение прекращает установку без перезаписи
-файлов.
+файлов. Выполняйте BAT в PowerShell от имени администратора: после установки
+моделей он автоматически зарегистрирует и запустит Windows-службу кандидата.
 
 Ключ UpdateRepository выполняет только безопасный git pull --ff-only. Ключ
 OpenFirewall открывает candidate port в профиле Private.
@@ -55,16 +56,45 @@ BootstrapAdminLogin и BootstrapAdminPassword (SecureString).
 установщик Microsoft потребует перезагрузку, перезагрузите сервер и повторите
 ту же команду установки.
 
-Назначьте отдельную service account без ACL на legacy data. Установщик выдаёт
-ей Modify только на отдельный `DataPath`, чтобы SQLite мог создать журнал и
-миграции при запуске. По умолчанию service account — текущая учётная запись,
-выполняющая установку. Поэтому для запуска launcher из `C:\Users\AI` установку
-тоже выполняйте от этой же учётной записи; UAC-повышение не меняет её имя. Для
-другой учётной записи передайте
-`-ServiceAccount "DOMAIN\service-user"` при прямом запуске
-`install-windows.ps1`.
-`NEXT_COOKIE_SECURE=true` предполагает HTTPS перед reverse proxy; прямой
-HTTP-доступ к 8010 предназначен только для локальной диагностики.
+Основной установщик выдаёт Modify только на отдельный `DataPath` текущей
+учётной записи, выполняющей установку: это требуется для первоначального
+создания администратора и ручного launcher. Для другого оператора при прямом
+запуске `install-windows.ps1` передайте
+`-ServiceAccount "DOMAIN\service-user"`. В стандартном Git-потоке служба
+после этого отдельно получает минимальный доступ как `LocalService`; legacy
+data ей не выдаются.
+Установщик оставляет `NEXT_COOKIE_SECURE=false`, потому что candidate слушает
+только `127.0.0.1:8010` и его сначала проверяют по локальному HTTP. После
+подключения HTTPS reverse proxy вручную установите `NEXT_COOKIE_SECURE=true` в
+`candidate.env.ps1`, затем перезапустите службу.
+
+## Автоматический запуск как Windows-службы
+
+Git-установщик делает это автоматически. Отдельная команда нужна только если
+кандидат уже был подготовлен через `install-windows.ps1` без BAT, либо если
+нужно повторно зарегистрировать службу после ручного ремонта. Она не трогает
+legacy-службу на порту 8000. Откройте PowerShell от имени администратора:
+
+```powershell
+& "C:\Services\TranscriptionNext\apps\local-voice-transcriber\deploy\install-windows-service.ps1" `
+  -ApplicationRoot "C:\Services\TranscriptionNext\apps\local-voice-transcriber" `
+  -DataRoot "E:\TranscriptionData"
+```
+
+Сценарий загрузит WinSW 2.12.0 из официального release, сверит SHA-256,
+создаст службу `TranscriptionNextCandidateService`, выдаст встроенной
+низкопривилегированной учётной записи `LocalService` доступ только к candidate
+data root, к каталогу приложения и к используемому Python runtime, а затем
+перезапустит службу после проверки `http://127.0.0.1:8010/health`. Пароль
+Windows не запрашивается и не хранится в XML или Git.
+
+Проверка и диагностика:
+
+```powershell
+Get-Service TranscriptionNextCandidateService
+Invoke-RestMethod "http://127.0.0.1:8010/health"
+Get-Content "E:\TranscriptionData\windows-service\logs\TranscriptionNextCandidateService.out.log" -Tail 100
+```
 
 Для одного `DataPath` поддерживается только один процесс candidate-приложения.
 Не запускайте второй launcher и не добавляйте Uvicorn workers: durable writer

@@ -193,7 +193,7 @@ if (-not (Test-Path -LiteralPath $environmentFile)) {
         '$env:NEXT_HOST = "127.0.0.1"'
         ('$env:NEXT_PORT = "' + $Port + '"')
         '$env:NEXT_INSTANCE_ID = "transcription-next-candidate"'
-        '$env:NEXT_COOKIE_SECURE = "true"'
+        '$env:NEXT_COOKIE_SECURE = "false"'
     )
     $environmentLines | Set-Content -LiteralPath $environmentFile -Encoding utf8
 }
@@ -201,6 +201,7 @@ else {
     Ensure-EnvironmentValue $environmentFile "NEXT_MODELS_DIR" $modelInstallation.ModelsRoot
     Ensure-EnvironmentValue $environmentFile "NEXT_ASR_MANIFEST" $modelInstallation.ManifestPath
     Ensure-EnvironmentValue $environmentFile "NEXT_FFMPEG_PATH" $modelInstallation.FfmpegPath
+    Ensure-EnvironmentValue $environmentFile "NEXT_COOKIE_SECURE" "false"
 }
 
 . $environmentFile
@@ -232,9 +233,13 @@ if (-not (Test-ActiveAdministrator $uv $appRoot)) {
 }
 
 $launcher = Join-Path $dataRoot "start-transcription-next.ps1"
+$applicationLauncher = Join-Path $appRoot ".venv\Scripts\local-voice-transcriber.exe"
+if (-not (Test-Path -LiteralPath $applicationLauncher -PathType Leaf)) {
+    throw "The application launcher was not found: $applicationLauncher"
+}
 '$ErrorActionPreference = "Stop"' | Set-Content -LiteralPath $launcher -Encoding utf8
 ('. "' + $environmentFile + '"') | Add-Content -LiteralPath $launcher -Encoding utf8
-('& "' + $uv + '" run --project "' + $appRoot + '" --no-sync local-voice-transcriber') | Add-Content -LiteralPath $launcher -Encoding utf8
+('& "' + $applicationLauncher + '"') | Add-Content -LiteralPath $launcher -Encoding utf8
 
 if ($OpenFirewall) {
     $ruleName = "Transcription Next candidate TCP $Port"
