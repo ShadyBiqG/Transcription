@@ -80,7 +80,7 @@ function Wait-TcpPortAvailable([int]$TimeoutSeconds = 15) {
     throw "TCP port $Port is already in use ($addresses). Stop the manual candidate launcher before installing the service."
 }
 
-function Wait-Health([int]$TimeoutSeconds = 45) {
+function Wait-Health([int]$TimeoutSeconds = 180) {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $healthUrl = "http://127.0.0.1:$Port/health"
     do {
@@ -95,6 +95,13 @@ function Wait-Health([int]$TimeoutSeconds = 45) {
         Start-Sleep -Seconds 2
     } while ((Get-Date) -lt $deadline)
     throw "Service $serviceName did not pass the local health check: $healthUrl"
+}
+
+function Get-ServiceLogTail([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return "(log file was not created)"
+    }
+    return (Get-Content -LiteralPath $Path -Tail 80 | Out-String).Trim()
 }
 
 Assert-Administrator
@@ -218,7 +225,9 @@ try {
 }
 catch {
     & $wrapperPath stop | Out-Null
-    throw
+    $errorLog = Get-ServiceLogTail (Join-Path $serviceLogPath "$serviceName.err.log")
+    $outputLog = Get-ServiceLogTail (Join-Path $serviceLogPath "$serviceName.out.log")
+    throw "$($_.Exception.Message)`nService error log:`n$errorLog`nService output log:`n$outputLog"
 }
 
 Write-Host "Windows service $serviceName is running and configured for delayed automatic start."

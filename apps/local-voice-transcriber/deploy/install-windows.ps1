@@ -233,13 +233,13 @@ if (-not (Test-ActiveAdministrator $uv $appRoot)) {
 }
 
 $launcher = Join-Path $dataRoot "start-transcription-next.ps1"
-$applicationLauncher = Join-Path $appRoot ".venv\Scripts\local-voice-transcriber.exe"
+$applicationLauncher = Join-Path $appRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $applicationLauncher -PathType Leaf)) {
-    throw "The application launcher was not found: $applicationLauncher"
+    throw "The application Python runtime was not found: $applicationLauncher"
 }
 '$ErrorActionPreference = "Stop"' | Set-Content -LiteralPath $launcher -Encoding utf8
 ('. "' + $environmentFile + '"') | Add-Content -LiteralPath $launcher -Encoding utf8
-('& "' + $applicationLauncher + '"') | Add-Content -LiteralPath $launcher -Encoding utf8
+('& "' + $applicationLauncher + '" -m local_voice_transcriber') | Add-Content -LiteralPath $launcher -Encoding utf8
 
 if ($OpenFirewall) {
     $ruleName = "Transcription Next candidate TCP $Port"
