@@ -141,7 +141,7 @@ uv run pytest
 используйте целевой набор из `scripts/test-candidate.ps1`:
 
 ```powershell
-# HTML, CSS и JavaScript
+# Синтаксис JavaScript интерфейса
 .\scripts\test-candidate.ps1 -Suite ui
 
 # Очередь, запуск, recovery и owner-scoped jobs
