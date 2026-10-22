@@ -110,38 +110,56 @@ $ffmpegArchiveSha256 = "fe7ce100a275215b1f5eac9b55731186679f493bba0aba044283928e
 
 try {
     $stagedAsr = Join-Path $stagingRoot "asr"
-    foreach ($name in $asrFiles.Keys) {
-        Get-OrDownload (
-            "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/322c3b29492673eb7d0b434bfa9dfb8653e34d02/$name"
-        ) (Join-Path $stagedAsr $name) $asrFiles[$name]
+    $asrDestination = Join-Path $modelsRoot $asrDirectoryName
+    if (Test-Path -LiteralPath $asrDestination) {
+        Assert-FileSet $asrDestination $asrFiles
     }
-    Publish-ModelDirectory $stagedAsr (Join-Path $modelsRoot $asrDirectoryName) $asrFiles
+    else {
+        foreach ($name in $asrFiles.Keys) {
+            Get-OrDownload (
+                "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/322c3b29492673eb7d0b434bfa9dfb8653e34d02/$name"
+            ) (Join-Path $stagedAsr $name) $asrFiles[$name]
+        }
+        Publish-ModelDirectory $stagedAsr $asrDestination $asrFiles
+    }
 
     $stagedVad = Join-Path $stagingRoot "vad"
-    Get-OrDownload (
-        "https://huggingface.co/istupakov/silero-vad-onnx/resolve/b3e3ee3cce4c11ceb63b1a0b229d916069c1ddf6/silero_vad.onnx"
-    ) (Join-Path $stagedVad "silero_vad.onnx") $vadFiles["silero_vad.onnx"]
-    Publish-ModelDirectory $stagedVad (Join-Path $modelsRoot $vadDirectoryName) $vadFiles
+    $vadDestination = Join-Path $modelsRoot $vadDirectoryName
+    if (Test-Path -LiteralPath $vadDestination) {
+        Assert-FileSet $vadDestination $vadFiles
+    }
+    else {
+        Get-OrDownload (
+            "https://huggingface.co/istupakov/silero-vad-onnx/resolve/b3e3ee3cce4c11ceb63b1a0b229d916069c1ddf6/silero_vad.onnx"
+        ) (Join-Path $stagedVad "silero_vad.onnx") $vadFiles["silero_vad.onnx"]
+        Publish-ModelDirectory $stagedVad $vadDestination $vadFiles
+    }
 
     $stagedVoice = Join-Path $stagingRoot "voice"
-    $segmentationArchive = Join-Path $stagingRoot "sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
-    Get-OrDownload (
-        "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
-    ) $segmentationArchive "24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488"
-    $expandedSegmentation = Join-Path $stagingRoot "segmentation-expanded"
-    & $UvPath run --project $AppRoot --no-sync python (Join-Path $PSScriptRoot "extract-model-archive.py") `
-        --archive $segmentationArchive --destination $expandedSegmentation
-    if ($LASTEXITCODE -ne 0) {
-        throw "Could not extract the verified speaker segmentation archive."
+    $voiceDestination = Join-Path $modelsRoot $voiceDirectoryName
+    if (Test-Path -LiteralPath $voiceDestination) {
+        Assert-FileSet $voiceDestination $voiceFiles
     }
-    $segmentationSource = Join-Path $expandedSegmentation "sherpa-onnx-pyannote-segmentation-3-0\model.onnx"
-    Assert-FileHash $segmentationSource $voiceFiles["segmentation/model.onnx"]
-    New-Item -ItemType Directory -Force -Path (Join-Path $stagedVoice "segmentation") | Out-Null
-    Copy-Item -LiteralPath $segmentationSource -Destination (Join-Path $stagedVoice "segmentation\model.onnx")
-    Get-OrDownload (
-        "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34.onnx"
-    ) (Join-Path $stagedVoice "embedding\wespeaker_en_voxceleb_resnet34.onnx") $voiceFiles["embedding/wespeaker_en_voxceleb_resnet34.onnx"]
-    Publish-ModelDirectory $stagedVoice (Join-Path $modelsRoot $voiceDirectoryName) $voiceFiles
+    else {
+        $segmentationArchive = Join-Path $stagingRoot "sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
+        Get-OrDownload (
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
+        ) $segmentationArchive "24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488"
+        $expandedSegmentation = Join-Path $stagingRoot "segmentation-expanded"
+        & $UvPath run --project $AppRoot --no-sync python (Join-Path $PSScriptRoot "extract-model-archive.py") `
+            --archive $segmentationArchive --destination $expandedSegmentation
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not extract the verified speaker segmentation archive."
+        }
+        $segmentationSource = Join-Path $expandedSegmentation "sherpa-onnx-pyannote-segmentation-3-0\model.onnx"
+        Assert-FileHash $segmentationSource $voiceFiles["segmentation/model.onnx"]
+        New-Item -ItemType Directory -Force -Path (Join-Path $stagedVoice "segmentation") | Out-Null
+        Copy-Item -LiteralPath $segmentationSource -Destination (Join-Path $stagedVoice "segmentation\model.onnx")
+        Get-OrDownload (
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34.onnx"
+        ) (Join-Path $stagedVoice "embedding\wespeaker_en_voxceleb_resnet34.onnx") $voiceFiles["embedding/wespeaker_en_voxceleb_resnet34.onnx"]
+        Publish-ModelDirectory $stagedVoice $voiceDestination $voiceFiles
+    }
 
     $ffmpegDirectory = Join-Path $toolsRoot $ffmpegDirectoryName
     $ffmpegExecutable = Join-Path $ffmpegDirectory "bin\ffmpeg.exe"
