@@ -24,9 +24,24 @@ function Assert-Administrator {
 
 function Grant-DirectoryAccess([string]$Path, [string]$Account, [string]$Rights) {
     $accessRule = "${Account}:(OI)(CI)$Rights"
-    $result = & icacls $Path /grant $accessRule /T /C 2>&1
+    $result = & icacls $Path /grant:r $accessRule /T /C 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "Could not grant $Rights access to $Account for $Path. $($result | Out-String)"
+    }
+}
+
+function Protect-ServicePath([string]$Path, [switch]$Directory) {
+    $acl = Get-Acl -LiteralPath $Path
+    $acl.SetAccessRuleProtection($true, $true)
+    Set-Acl -LiteralPath $Path -AclObject $acl
+    if ($Directory) {
+        Grant-DirectoryAccess $Path $localServiceSid "RX"
+    }
+    else {
+        $result = & icacls $Path /grant:r "${localServiceSid}:RX" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not protect the service control file: $Path. $($result | Out-String)"
+        }
     }
 }
 
@@ -45,7 +60,9 @@ function Wait-ServiceStatus([string]$ExpectedStatus, [int]$TimeoutSeconds = 30) 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
         $service = Get-Service -Name $serviceName -ErrorAction Stop
-        if ($service.Status.ToString() -eq $ExpectedStatus) {
+        $matches = $service.Status.ToString() -eq $ExpectedStatus
+        $service.Dispose()
+        if ($matches) {
             return
         }
         Start-Sleep -Seconds 1
@@ -56,9 +73,11 @@ function Wait-ServiceStatus([string]$ExpectedStatus, [int]$TimeoutSeconds = 30) 
 function Wait-ServiceRemoval([int]$TimeoutSeconds = 30) {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
-        if ($null -eq (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) {
+        $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+        if ($null -eq $service) {
             return
         }
+        $service.Dispose()
         Start-Sleep -Seconds 1
     } while ((Get-Date) -lt $deadline)
     throw "Service $serviceName was not removed within $TimeoutSeconds seconds."
@@ -83,18 +102,28 @@ function Wait-TcpPortAvailable([int]$TimeoutSeconds = 15) {
 function Wait-Health([int]$TimeoutSeconds = 180) {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $healthUrl = "http://127.0.0.1:$Port/health"
+    $lastDetail = "No HTTP response."
     do {
+        $service = Get-Service -Name $serviceName -ErrorAction Stop
+        $stopped = $service.Status -eq "Stopped"
+        $service.Dispose()
+        if ($stopped) {
+            throw "Service $serviceName exited before the health check completed."
+        }
         try {
             $health = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 5
-            if ($health.status -eq "ok") {
+            if ($health.status -eq "ok" -and $health.service -eq "transcription-next" -and
+                $health.instance_id -eq $env:NEXT_INSTANCE_ID) {
                 return
             }
+            $lastDetail = $health | ConvertTo-Json -Compress -Depth 4
         }
         catch {
+            $lastDetail = $_.Exception.Message
         }
         Start-Sleep -Seconds 2
     } while ((Get-Date) -lt $deadline)
-    throw "Service $serviceName did not pass the local health check: $healthUrl"
+    throw "Service $serviceName did not pass the local health check: $healthUrl. Last response: $lastDetail"
 }
 
 function Get-ServiceLogTail([string]$Path) {
@@ -117,6 +146,9 @@ if (-not (Test-Path -LiteralPath $environmentFile -PathType Leaf)) {
     throw "The candidate environment file was not found: $environmentFile"
 }
 . $environmentFile
+if ([string]::IsNullOrWhiteSpace($env:NEXT_INSTANCE_ID)) {
+    throw "NEXT_INSTANCE_ID must be configured in $environmentFile."
+}
 if (-not [int]::TryParse($env:NEXT_PORT, [ref]$Port)) {
     throw "NEXT_PORT in $environmentFile must be a valid TCP port."
 }
@@ -127,11 +159,21 @@ $pythonLauncher = Join-Path $applicationRootPath ".venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $pythonLauncher -PathType Leaf)) {
     throw "The candidate Python launcher was not found: $pythonLauncher"
 }
-$pythonRuntimePath = (& $pythonLauncher -c "import sys; print(sys.base_prefix)" | Out-String).Trim()
+$pythonRuntimePath = (& $pythonLauncher -I -X utf8 -c "import sys; print(sys.base_prefix)" | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($pythonRuntimePath)) {
     throw "Could not determine the Python runtime used by the candidate virtual environment."
 }
 $pythonRuntimeRoot = (Resolve-Path -LiteralPath $pythonRuntimePath).Path
+$isolatedRuntimeRoot = Join-Path $dataRootPath "python-runtime"
+if (-not $pythonRuntimeRoot.StartsWith(
+    $isolatedRuntimeRoot.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase
+)) {
+    throw "The virtual environment still uses Python outside the isolated data runtime: $pythonRuntimeRoot. Run install-windows.ps1 first."
+}
+& $pythonLauncher -I -X utf8 -c "import pathlib, sys, local_voice_transcriber, local_voice_transcriber.__main__; from local_voice_transcriber.config import Settings; package = pathlib.Path(local_voice_transcriber.__file__).resolve(); assert package.is_relative_to(pathlib.Path(sys.prefix, 'Lib', 'site-packages').resolve()), package; assert Settings.from_env().data_dir.resolve() == pathlib.Path(sys.argv[1]).resolve(), 'NEXT_DATA_DIR does not match DataRoot'; print('Service package:', package)" $dataRootPath
+if ($LASTEXITCODE -ne 0) {
+    throw "The exact service Python cannot load the installed candidate package. Run install-windows.ps1 first; setting PYTHONPATH is not required."
+}
 
 $serviceRoot = Join-Path $dataRootPath "windows-service"
 $serviceLogPath = Join-Path $serviceRoot "logs"
@@ -139,9 +181,29 @@ $wrapperPath = Join-Path $serviceRoot "$serviceName.exe"
 $configurationPath = Join-Path $serviceRoot "$serviceName.xml"
 New-Item -ItemType Directory -Force -Path $serviceRoot, $serviceLogPath | Out-Null
 
+$existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+if ($null -ne $existingService -and $existingService.Status -ne "Stopped") {
+    Stop-Service -InputObject $existingService -ErrorAction Stop
+    Wait-ServiceStatus "Stopped" 60
+}
+Wait-TcpPortAvailable
+
+$launcherLines = @(
+    '$ErrorActionPreference = "Stop"'
+    ('. ' + "'" + $environmentFile.Replace("'", "''") + "'")
+    ('Set-Location -LiteralPath ' + "'" + $dataRootPath.Replace("'", "''") + "'")
+    ('& ' + "'" + $pythonLauncher.Replace("'", "''") + "'" + ' -I -X utf8 -u -m local_voice_transcriber')
+    'exit $LASTEXITCODE'
+)
+$launcherLines | Set-Content -LiteralPath $launcherPath -Encoding utf8
+
 Grant-DirectoryAccess $dataRootPath $localServiceSid "M"
 Grant-DirectoryAccess $applicationRootPath $localServiceSid "RX"
-Grant-DirectoryAccess $pythonRuntimeRoot $localServiceSid "RX"
+Protect-ServicePath $isolatedRuntimeRoot -Directory
+Protect-ServicePath $launcherPath
+Protect-ServicePath $environmentFile
+Protect-ServicePath $serviceRoot -Directory
+Grant-DirectoryAccess $serviceLogPath $localServiceSid "M"
 
 if (Test-Path -LiteralPath $wrapperPath -PathType Leaf) {
     Assert-FileHash $wrapperPath $winSwSha256
@@ -191,17 +253,8 @@ $configuration = @"
   </serviceaccount>
 </service>
 "@
-$configuration | Set-Content -LiteralPath $configurationPath -Encoding utf8
-
-$existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 if ($null -ne $existingService) {
-    if ($existingService.Status -eq "Running") {
-        & $wrapperPath stop
-        if ($LASTEXITCODE -ne 0) {
-            throw "Could not stop Windows service $serviceName for replacement."
-        }
-        Wait-ServiceStatus "Stopped"
-    }
+    $existingService.Dispose()
     & $wrapperPath uninstall
     if ($LASTEXITCODE -ne 0) {
         throw "Could not remove Windows service $serviceName for replacement."
@@ -209,25 +262,50 @@ if ($null -ne $existingService) {
     Wait-ServiceRemoval
 }
 
+$configuration | Set-Content -LiteralPath $configurationPath -Encoding utf8
 Wait-TcpPortAvailable
 & $wrapperPath install
 if ($LASTEXITCODE -ne 0) {
     throw "Could not install Windows service $serviceName."
 }
 
-& $wrapperPath start
-if ($LASTEXITCODE -ne 0) {
-    throw "Could not start Windows service $serviceName."
+$attemptId = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ") + "-" + [guid]::NewGuid().ToString("N")
+$archivePath = Join-Path $serviceLogPath ("previous-" + $attemptId)
+foreach ($logName in @("$serviceName.err.log", "$serviceName.out.log", "$serviceName.wrapper.log")) {
+    $logPath = Join-Path $serviceLogPath $logName
+    if (Test-Path -LiteralPath $logPath -PathType Leaf) {
+        New-Item -ItemType Directory -Force -Path $archivePath | Out-Null
+        Move-Item -LiteralPath $logPath -Destination (Join-Path $archivePath $logName)
+    }
 }
-Wait-ServiceStatus "Running"
 try {
+    & $wrapperPath start
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not start Windows service $serviceName."
+    }
+    Wait-ServiceStatus "Running"
+    $installedService = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
+    $installedAccountSid = ([System.Security.Principal.NTAccount]::new($installedService.StartName).Translate(
+        [System.Security.Principal.SecurityIdentifier]
+    )).Value
+    if ($installedAccountSid -ne "S-1-5-19") {
+        throw "The candidate service was not installed as LocalService: $($installedService.StartName)"
+    }
     Wait-Health
 }
 catch {
-    & $wrapperPath stop | Out-Null
+    $failure = $_.Exception.Message
+    try {
+        Stop-Service -Name $serviceName -ErrorAction Stop
+        Wait-ServiceStatus "Stopped" 60
+    }
+    catch {
+        $failure += "`nCould not stop the failed candidate service: $($_.Exception.Message)"
+    }
     $errorLog = Get-ServiceLogTail (Join-Path $serviceLogPath "$serviceName.err.log")
     $outputLog = Get-ServiceLogTail (Join-Path $serviceLogPath "$serviceName.out.log")
-    throw "$($_.Exception.Message)`nService error log:`n$errorLog`nService output log:`n$outputLog"
+    $wrapperLog = Get-ServiceLogTail (Join-Path $serviceLogPath "$serviceName.wrapper.log")
+    throw "$failure`nAttempt: $attemptId`nService Python: $pythonLauncher`nBase runtime: $pythonRuntimeRoot`nService error log:`n$errorLog`nService output log:`n$outputLog`nWinSW log:`n$wrapperLog`nPrevious logs: $archivePath"
 }
 
 Write-Host "Windows service $serviceName is running and configured for delayed automatic start."

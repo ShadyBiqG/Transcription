@@ -50,8 +50,20 @@ goto :end
 
 :check_powershell
 where powershell >nul 2>nul
-if not errorlevel 1 goto :clone_or_verify
+if not errorlevel 1 goto :check_prerequisites
 call :fail "powershell was not found. Windows PowerShell 5.1 or newer is required."
+goto :end
+
+:check_prerequisites
+where uv >nul 2>nul
+if errorlevel 1 goto :missing_uv
+powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; $identity = [Security.Principal.WindowsIdentity]::GetCurrent(); $principal = [Security.Principal.WindowsPrincipal]::new($identity); if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { Write-Error 'Run this BAT from an elevated PowerShell session.'; exit 1 }"
+if not errorlevel 1 goto :clone_or_verify
+call :fail "Administrator privileges are required before preparing the candidate."
+goto :end
+
+:missing_uv
+call :fail "uv was not found. Install uv and try again."
 goto :end
 
 :clone_or_verify
@@ -119,6 +131,8 @@ goto :end
 
 :pull_update
 echo Safely updating branch "%BRANCH_NAME%"...
+call :stop_candidate_service
+if errorlevel 1 goto :service_stop_failed
 git -C "%CLONE_PATH%" pull --ff-only origin "%BRANCH_NAME%"
 if not errorlevel 1 goto :verify_application
 call :fail "git pull --ff-only failed. The working directory was not overwritten."
@@ -141,7 +155,7 @@ call :fail "The PowerShell installer failed. The legacy application was not chan
 goto :end
 
 :stop_candidate_service
-powershell -NoProfile -Command "$service = Get-Service -Name 'TranscriptionNextCandidateService' -ErrorAction SilentlyContinue; if ($null -ne $service -and $service.Status -eq 'Running') { Stop-Service -Name 'TranscriptionNextCandidateService' -ErrorAction Stop; $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30)) }"
+powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; try { $service = Get-Service -Name 'TranscriptionNextCandidateService' -ErrorAction SilentlyContinue; if ($null -ne $service -and $service.Status -ne 'Stopped') { Stop-Service -Name 'TranscriptionNextCandidateService' -ErrorAction Stop; $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(60)) }; exit 0 } catch { Write-Error $_; exit 1 }"
 exit /b %errorlevel%
 
 :service_stop_failed
