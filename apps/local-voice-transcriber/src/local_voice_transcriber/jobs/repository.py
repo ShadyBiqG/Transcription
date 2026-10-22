@@ -197,6 +197,12 @@ class JobRepository:
             ).fetchone()
             if existing is not None:
                 return _to_run(existing)
+            active = connection.execute(
+                "SELECT 1 FROM next_job_runs WHERE job_id = ? AND status IN (?, ?) LIMIT 1",
+                (job_id, JobStatus.QUEUED, JobStatus.PROCESSING),
+            ).fetchone()
+            if active is not None:
+                raise InvalidRunState("Запись уже ожидает обработки или обрабатывается")
             if (
                 connection.execute("SELECT 1 FROM next_jobs WHERE id = ?", (job_id,)).fetchone()
                 is None
@@ -229,6 +235,35 @@ class JobRepository:
                 (JobStatus.QUEUED, run_id, now, job_id),
             )
         return self.get_run(run_id)
+
+    def recording_statistics_by_owner(self) -> dict[str, dict[str, object]]:
+        """Считает все записи владельцев, не извлекая их приватное содержимое."""
+
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT owner_id, status, COUNT(*) AS count FROM next_jobs "
+                "GROUP BY owner_id, status"
+            ).fetchall()
+        counters: dict[str, dict[str, int]] = {}
+        for row in rows:
+            counts = counters.setdefault(str(row["owner_id"]), dict.fromkeys(JobStatus, 0))
+            counts[row["status"]] = int(row["count"])
+        return {
+            owner_id: {"recordings_total": sum(counts.values()), "by_status": counts}
+            for owner_id, counts in counters.items()
+        }
+
+    def recording_statistics(self) -> dict[str, object]:
+        """Возвращает полные агрегаты записей без ограничения выдачи списка."""
+
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT status, COUNT(*) AS count FROM next_jobs GROUP BY status"
+            ).fetchall()
+        counts = dict.fromkeys(JobStatus, 0)
+        for row in rows:
+            counts[row["status"]] = int(row["count"])
+        return {"recordings_total": sum(counts.values()), "by_status": counts}
 
     def get_run(self, run_id: str) -> JobRun:
         with self._connection() as connection:

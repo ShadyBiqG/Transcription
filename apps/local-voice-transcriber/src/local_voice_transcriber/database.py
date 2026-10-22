@@ -23,6 +23,10 @@ def session_expiry(days: int) -> str:
     return (datetime.now(UTC) + timedelta(days=days)).isoformat()
 
 
+class LastActiveAdminError(RuntimeError):
+    """Изменение оставит сервис без действующего администратора."""
+
+
 class Database:
     """Минимальный слой SQLite без хранения секретов в открытом виде."""
 
@@ -135,10 +139,8 @@ class Database:
         user_id: str,
         role: str | None = None,
         is_active: bool | None = None,
+        protect_last_admin: bool = False,
     ) -> dict[str, Any] | None:
-        user = self.get_user(user_id)
-        if user is None:
-            return None
         fields: list[str] = []
         values: list[object] = []
         if role is not None:
@@ -147,12 +149,29 @@ class Database:
         if is_active is not None:
             fields.append("is_active = ?")
             values.append(int(is_active))
-        if not fields:
-            return user
         values.append(user_id)
         with self.connection() as connection:
-            connection.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", values)
-        return self.get_user(user_id)
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            if row is None:
+                return None
+            removes_active_admin = (
+                row["role"] == "admin"
+                and bool(row["is_active"])
+                and (role == "user" or is_active is False)
+            )
+            if protect_last_admin and removes_active_admin:
+                admins = connection.execute(
+                    "SELECT COUNT(*) FROM users WHERE role = 'admin' AND is_active = 1"
+                ).fetchone()[0]
+                if admins <= 1:
+                    raise LastActiveAdminError(
+                        "Нельзя отключить или понизить последнего администратора"
+                    )
+            if fields:
+                connection.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", values)
+                row = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return dict(row)
 
     def create_session(
         self,

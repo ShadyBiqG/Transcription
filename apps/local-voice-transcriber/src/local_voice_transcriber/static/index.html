@@ -13,14 +13,18 @@
         <div class="session" id="session-state">Проверяем сессию…</div>
       </header>
       <section class="notice" id="notice" hidden aria-live="polite"></section>
-      <section class="auth-grid" id="auth-panel">
-        <form class="card" id="login-form">
+      <section class="auth-panel card" id="auth-panel" aria-label="Доступ к сервису">
+        <nav class="auth-tabs" aria-label="Вход и регистрация">
+          <button type="button" class="active" id="show-login" aria-controls="login-form" aria-pressed="true">Войти</button>
+          <button type="button" id="show-register" aria-controls="register-form" aria-pressed="false">Зарегистрироваться</button>
+        </nav>
+        <form id="login-form">
           <h2>Войти</h2>
           <label>E-mail или логин<input name="login" autocomplete="username" required maxlength="254"></label>
           <label>Пароль<input name="password" type="password" autocomplete="current-password" required></label>
           <button type="submit">Войти</button>
         </form>
-        <form class="card" id="register-form">
+        <form id="register-form" hidden>
           <h2>Создать учётную запись</h2>
           <p class="muted">Подтверждение почты появится в отдельном выпуске.</p>
           <label>E-mail или логин<input name="login" autocomplete="username" required maxlength="254"></label>
@@ -41,10 +45,13 @@
           <div class="view-header">
             <div><p class="eyebrow">Приватная очередь</p><h2>Мои записи</h2></div>
             <form id="upload-form" class="upload-form">
-              <label class="file-picker">Выбрать .webm<input name="media" type="file" accept="video/webm,audio/webm,.webm" required></label>
-              <button type="submit">Загрузить</button>
+              <input id="media-input" name="media" type="file" accept="video/webm,audio/webm,.webm" required hidden>
+              <button type="button" id="choose-media" class="secondary">Загрузить запись</button>
+              <span id="selected-media" class="muted" aria-live="polite">Файл .webm не выбран</span>
+              <button type="submit" id="add-job-button" disabled>Добавить в список</button>
             </form>
           </div>
+          <p class="muted">Сначала добавьте файл в список, затем нажмите «Транскрибировать» у записи.</p>
           <div id="jobs-list" class="job-list" aria-live="polite"></div>
         </section>
         <section class="view" id="profiles-view">
@@ -74,7 +81,11 @@
             <section class="card transcript-card"><div class="transcript-heading"><div><h3>Транскрипция</h3><p class="muted" id="editor-help">Выберите готовую запись.</p></div><button type="button" id="save-editor-button" disabled>Сохранить правки</button></div><div id="transcript-list"><p class="muted">Исходные реплики будут доступны после обработки.</p></div></section>
           </div>
         </section>
-        <section class="view" id="admin-view"><div class="view-header"><div><p class="eyebrow">Только технические показатели</p><h2>Администрирование</h2></div><button type="button" id="admin-retry-index">Повторить обновление голосового индекса</button></div><pre class="card" id="admin-overview">Загрузка…</pre></section>
+        <section class="view" id="admin-view">
+          <div class="view-header"><div><p class="eyebrow">Учётные записи и технические показатели</p><h2>Администрирование</h2></div><button type="button" id="admin-retry-index">Повторить обновление голосового индекса</button></div>
+          <section class="card admin-users-card"><h3>Пользователи</h3><p class="muted">Роли, состояние учётных записей и количество записей по статусам.</p><div id="admin-users" class="profile-list" aria-live="polite"></div></section>
+          <pre class="card" id="admin-overview"></pre>
+        </section>
       </section>
     </main>
     <script src="/static/app.js" defer></script>

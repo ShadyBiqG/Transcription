@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 
 from local_voice_transcriber.asr import AsrRecognition, AsrSegment, AsrToken, AsrWord
 from local_voice_transcriber.jobs import ImmutableSourceError, JobRepository, JobStatus
+from local_voice_transcriber.jobs.repository import InvalidRunState
 
 
 def test_run_is_idempotent_and_single_worker_lease_is_atomic(tmp_path: Path) -> None:
@@ -27,6 +30,30 @@ def test_run_is_idempotent_and_single_worker_lease_is_atomic(tmp_path: Path) -> 
     assert repository.claim_next_run(worker_id="worker-b", lease_seconds=30) is None
     assert repository.heartbeat(run_id="run-1", worker_id="worker-a", lease_seconds=30)
     assert not repository.heartbeat(run_id="run-1", worker_id="worker-b", lease_seconds=30)
+
+
+def test_concurrent_run_requests_create_only_one_active_run(tmp_path: Path) -> None:
+    repository = prepared_repository(tmp_path)
+    barrier = Barrier(2)
+
+    def create(index: int) -> str:
+        barrier.wait(timeout=5)
+        try:
+            repository.create_run(
+                run_id=f"run-{index}",
+                job_id="job-1",
+                request_id=f"r{index}",
+                asr_pack_id="fake-pack",
+            )
+        except InvalidRunState:
+            return "conflict"
+        return "created"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(create, range(2)))
+
+    assert sorted(results) == ["conflict", "created"]
+    assert len(repository.list_runs(job_id="job-1", owner_id="owner-1")) == 1
 
 
 def test_expired_run_becomes_stalled_and_retries_without_duplicate_attempt(tmp_path: Path) -> None:

@@ -1,5 +1,6 @@
 :root { color-scheme: dark; font-family: Inter, "Segoe UI", sans-serif; background: #0b1120; color: #edf2f7; }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; min-width: 320px; }
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; border: 0; border-radius: .65rem; padding: .68rem 1rem; background: #4f8cff; color: white; font-weight: 650; }
@@ -17,9 +18,12 @@ h2 { margin-bottom: .25rem; }
 .session, .pill { color: #bcd0ed; background: #17243a; border-radius: 99px; padding: .45rem .75rem; font-size: .9rem; }
 .notice { padding: .8rem 1rem; margin: 1.5rem 0; border-radius: .7rem; background: #223454; border-left: 4px solid #79a9ff; }
 .notice.error { background: #44242d; border-color: #ff8597; }
-.auth-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; max-width: 760px; margin: 3rem auto; }
+.auth-panel { max-width: 480px; margin: 3rem auto; }
+.auth-tabs { display: flex; gap: .5rem; margin-bottom: 1.25rem; }
+.auth-tabs button { flex: 1; background: #26334a; }
+.auth-tabs button.active { background: #4f8cff; }
 .card { background: #101a2d; border: 1px solid #243653; border-radius: 1rem; padding: 1.2rem; }
-.auth-grid form { display: grid; align-content: start; gap: .9rem; }
+.auth-panel form { display: grid; align-content: start; gap: .9rem; }
 .muted { color: #9cadc6; }
 .tabs { justify-content: flex-start; flex-wrap: wrap; border-bottom: 1px solid #263854; margin-bottom: 1.8rem; }
 .tab { border-radius: .6rem .6rem 0 0; background: transparent; color: #abc0df; }
@@ -30,8 +34,16 @@ h2 { margin-bottom: .25rem; }
 .job-list, .profile-list, #groups-list, #transcript-list { display: grid; gap: .7rem; margin-top: 1.25rem; }
 .job, .profile, .transcript-row, .group-editor { display: grid; gap: .35rem; padding: .9rem 1rem; border: 1px solid #263854; background: #0f192a; border-radius: .7rem; }
 .job { grid-template-columns: 1fr auto; align-items: center; }
+.job strong, .job small { display: block; overflow-wrap: anywhere; }
+.job-actions { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: flex-end; }
+.upload-form { flex-wrap: wrap; justify-content: flex-end; }
+#selected-media { max-width: 250px; overflow-wrap: anywhere; }
+.admin-users-card { margin: 1.25rem 0; }
+.admin-user { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1rem; align-items: center; }
+.admin-user strong { overflow-wrap: anywhere; }
+.admin-user p { margin: .5rem 0 0; }
 .job small, .profile small { color: #a9bbd5; }
-.status-ready { color: #72ddad; }.status-failed { color: #ff94a3; }.status-processing, .status-queued { color: #f4c36a; }
+.status-ready { color: #72ddad; }.status-failed, .status-stalled { color: #ff94a3; }.status-processing, .status-queued { color: #f4c36a; }
 .editor-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 1rem; }
 .player-card, .transcript-card { grid-column: 1; }.groups-card { grid-column: 2; grid-row: 1 / span 2; }
 .waveform { height: 76px; border-radius: .5rem; background: repeating-linear-gradient(90deg, #1b2b45 0 4px, #233b61 4px 6px); overflow: hidden; margin-bottom: .8rem; }
@@ -47,4 +59,4 @@ audio { width: 100%; }.subtitle-line { margin-top: .8rem; min-height: 2rem; font
 .transcript-row.active { border-color: #6da5ff; background: #172844; }
 .group-editor { grid-template-columns: 1fr; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-@media (max-width: 720px) { .auth-grid, .editor-layout { grid-template-columns: 1fr; } .groups-card, .player-card, .transcript-card { grid-column: auto; grid-row: auto; } .topbar, .view-header, .upload-form, .transcript-heading { align-items: flex-start; flex-direction: column; } .inline-form { width: 100%; } }
+@media (max-width: 720px) { .editor-layout, .admin-user, .job { grid-template-columns: 1fr; } .groups-card, .player-card, .transcript-card { grid-column: auto; grid-row: auto; } .topbar, .view-header, .upload-form, .transcript-heading { align-items: flex-start; flex-direction: column; } .inline-form { width: 100%; } .job-actions { justify-content: flex-start; } }

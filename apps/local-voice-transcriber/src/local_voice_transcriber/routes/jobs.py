@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 
 from ..auth import ApiError, CsrfSessionDependency, SessionDependency
 from ..jobs import Job, JobRepository, JobRun
+from ..jobs.repository import InvalidRunState
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
 _MAX_UPLOAD_BYTES = 512 * 1024 * 1024
@@ -150,13 +151,18 @@ def create_run(
         )
     if not idempotency_key or len(idempotency_key) > 128:
         raise ApiError(422, "idempotency_key_required", "Передайте заголовок Idempotency-Key")
-    run = repository.create_run(
-        run_id=str(uuid4()),
-        job_id=job.id,
-        request_id=idempotency_key,
-        asr_pack_id=request.app.state.asr_pack_id,
-        voice_pack_id=request.app.state.voice_pack_id,
-    )
+    try:
+        run = repository.create_run(
+            run_id=str(uuid4()),
+            job_id=job.id,
+            request_id=idempotency_key,
+            asr_pack_id=request.app.state.asr_pack_id,
+            voice_pack_id=request.app.state.voice_pack_id,
+        )
+    except InvalidRunState as error:
+        raise ApiError(
+            409, "active_run_exists", "Запись уже ожидает обработки или обрабатывается"
+        ) from error
     return {"run": _run_projection(run)}
 
 
@@ -230,8 +236,7 @@ def get_speaker_groups(
                 "profile_id": group.profile_id,
                 "assignment_status": group.assignment_status,
                 "requires_review": any(
-                    group.speaker_group_id in segment.speaker_group_ids
-                    and segment.requires_review
+                    group.speaker_group_id in segment.speaker_group_ids and segment.requires_review
                     for segment in revision.segments
                 ),
             }

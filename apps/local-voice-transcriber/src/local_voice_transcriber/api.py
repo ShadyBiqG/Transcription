@@ -34,7 +34,7 @@ from .auth import (
     verify_password,
 )
 from .config import Settings
-from .database import Database
+from .database import Database, LastActiveAdminError
 from .diarization import (
     DiarizationInterval,
     DiarizationPackVerificationError,
@@ -47,6 +47,7 @@ from .health import health_payload
 from .jobs import JobRepository
 from .jobs.dispatcher import OneWorkerDispatcher
 from .jobs.media import FfmpegNormalizer
+from .jobs.models import JobStatus
 from .jobs.pipeline import AsrJobProcessor
 from .routes.editor import router as editor_router
 from .routes.jobs import router as jobs_router
@@ -391,7 +392,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/v1/admin/users", tags=["admin"])
     def list_users(_: AdminDependency) -> dict[str, object]:
-        return {"items": database.list_users()}
+        statistics = jobs_repository.recording_statistics_by_owner()
+        return {
+            "items": [
+                {
+                    **_public_user(user),
+                    "statistics": statistics.get(
+                        user["id"],
+                        {"recordings_total": 0, "by_status": dict.fromkeys(JobStatus, 0)},
+                    ),
+                }
+                for user in database.list_users()
+            ]
+        }
 
     @app.post("/api/v1/admin/users", status_code=status.HTTP_201_CREATED, tags=["admin"])
     def create_user_by_admin(
@@ -429,18 +442,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise ApiError(404, "not_found", "Пользователь не найден")
         if payload.role is None and payload.is_active is None:
             raise ApiError(422, "no_changes", "Не переданы изменения")
-        removes_last_admin = (
-            user["role"] == "admin"
-            and bool(user["is_active"])
-            and (payload.role == "user" or payload.is_active is False)
-        )
-        if removes_last_admin and database.count_active_admins() <= 1:
+        try:
+            updated_user = database.update_user(
+                user_id=user_id,
+                role=payload.role,
+                is_active=payload.is_active,
+                protect_last_admin=True,
+            )
+        except LastActiveAdminError as error:
             raise ApiError(
                 409, "last_admin", "Нельзя отключить или понизить последнего администратора"
-            )
-        updated_user = database.update_user(
-            user_id=user_id, role=payload.role, is_active=payload.is_active
-        )
+            ) from error
         database.add_audit_event(
             actor_id=admin.user_id,
             action="admin_updated_user",
@@ -455,11 +467,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         health, _ = health_payload(application_settings, database)
         vector_store_status = vector_store.status()
+        users = database.list_users()
         return {
             "service": health["service"],
             "instance_id": health["instance_id"],
             "checks": health["checks"],
-            "users_count": len(database.list_users()),
+            "users_count": len(users),
+            "users_total": len(users),
+            "users_active": sum(bool(user["is_active"]) for user in users),
+            "users_admins": sum(user["role"] == "admin" for user in users),
+            **jobs_repository.recording_statistics(),
             "active_voice_profiles": len(voice_directory_service.list_profiles()),
             "voice_vector_store": {
                 "availability": vector_store_status.availability,
