@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Transcription Next</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div><p class="eyebrow">Локальная обработка</p><h1>Transcription Next</h1></div>
+        <div class="session" id="session-state">Проверяем сессию…</div>
+      </header>
+      <section class="notice" id="notice" hidden aria-live="polite"></section>
+      <section class="auth-grid" id="auth-panel">
+        <form class="card" id="login-form">
+          <h2>Войти</h2>
+          <label>Логин<input name="login" autocomplete="username" required maxlength="64"></label>
+          <label>Пароль<input name="password" type="password" autocomplete="current-password" required></label>
+          <button type="submit">Войти</button>
+        </form>
+        <form class="card" id="register-form">
+          <h2>Создать учётную запись</h2>
+          <p class="muted">Подтверждение почты появится в отдельном выпуске.</p>
+          <label>Логин<input name="login" autocomplete="username" required maxlength="64"></label>
+          <label>Пароль<input name="password" type="password" autocomplete="new-password" required></label>
+          <button type="submit" class="secondary">Зарегистрироваться</button>
+        </form>
+      </section>
+      <section id="workspace" hidden>
+        <nav class="tabs" aria-label="Разделы">
+          <button class="tab active" data-view="jobs">Мои записи</button>
+          <button class="tab" data-view="profiles">Голосовые профили</button>
+          <button class="tab" data-view="vocabulary">Словарь</button>
+          <button class="tab" data-view="editor">Редактор</button>
+          <button class="tab admin-only" data-view="admin" hidden>Администрирование</button>
+          <button class="tab" id="logout-button">Выйти</button>
+        </nav>
+        <section class="view active" id="jobs-view">
+          <div class="view-header">
+            <div><p class="eyebrow">Приватная очередь</p><h2>Мои записи</h2></div>
+            <form id="upload-form" class="upload-form">
+              <label class="file-picker">Выбрать .webm<input name="media" type="file" accept="video/webm,audio/webm,.webm" required></label>
+              <button type="submit">Загрузить</button>
+            </form>
+          </div>
+          <div id="jobs-list" class="job-list" aria-live="polite"></div>
+        </section>
+        <section class="view" id="profiles-view">
+          <div class="view-header">
+            <div><p class="eyebrow">Общий справочник без источников</p><h2>Голосовые профили</h2></div>
+            <form id="profile-form" class="inline-form"><input name="display_name" placeholder="Имя профиля" required maxlength="120"><button type="submit">Добавить</button></form>
+          </div>
+          <div id="profiles-list" class="profile-list"></div>
+        </section>
+        <section class="view" id="vocabulary-view">
+          <div class="view-header">
+            <div><p class="eyebrow">Общие подсказки для будущих запусков</p><h2>Словарь</h2></div>
+            <form id="vocabulary-form" class="inline-form">
+              <input name="canonical" placeholder="Специфичный термин" required maxlength="250">
+              <input name="variants" placeholder="Варианты через запятую" maxlength="750">
+              <button type="submit">Добавить</button>
+            </form>
+          </div>
+          <p class="muted">Термины не переписывают готовые транскрипции и не раскрывают автора изменений.</p>
+          <div id="vocabulary-list" class="profile-list"></div>
+        </section>
+        <section class="view" id="editor-view">
+          <div class="view-header"><div><p class="eyebrow">Проверка и исправление</p><h2 id="editor-title">Редактор</h2></div><span class="pill" id="editor-status">Выберите готовую запись</span></div>
+          <div class="editor-layout">
+            <section class="card player-card"><div class="waveform" aria-label="Шкала аудио"><span></span></div><audio id="audio-player" controls preload="metadata"></audio><div id="subtitle-line" class="subtitle-line">Субтитры появятся после обработки.</div></section>
+            <aside class="card groups-card"><h3>Группы говорящих</h3><p class="muted">Исправьте имя или назначьте общий профиль один раз для всей группы.</p><div id="groups-list"><p class="muted">Нет выбранной записи.</p></div></aside>
+            <section class="card transcript-card"><div class="transcript-heading"><div><h3>Транскрипция</h3><p class="muted" id="editor-help">Выберите готовую запись.</p></div><button type="button" id="save-editor-button" disabled>Сохранить правки</button></div><div id="transcript-list"><p class="muted">Исходные реплики будут доступны после обработки.</p></div></section>
+          </div>
+        </section>
+        <section class="view" id="admin-view"><div class="view-header"><div><p class="eyebrow">Только технические показатели</p><h2>Администрирование</h2></div></div><pre class="card" id="admin-overview">Загрузка…</pre></section>
+      </section>
+    </main>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

@@ -1,0 +1,50 @@
+:root { color-scheme: dark; font-family: Inter, "Segoe UI", sans-serif; background: #0b1120; color: #edf2f7; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; }
+button, input, select, textarea { font: inherit; }
+button { cursor: pointer; border: 0; border-radius: .65rem; padding: .68rem 1rem; background: #4f8cff; color: white; font-weight: 650; }
+button:hover { background: #3575e8; }
+button.secondary, .file-picker { background: #26334a; }
+button:disabled { cursor: not-allowed; opacity: .5; }
+input, select, textarea { width: 100%; color: inherit; background: #111c30; border: 1px solid #33445f; border-radius: .5rem; padding: .65rem; }
+label { display: grid; gap: .4rem; font-weight: 600; }
+.shell { width: min(1180px, calc(100% - 2rem)); margin: 0 auto; padding: 2rem 0 4rem; }
+.topbar, .view-header, .tabs, .upload-form, .inline-form { display: flex; gap: 1rem; align-items: center; justify-content: space-between; }
+h1, h2, h3, p { margin-top: 0; }
+h1 { margin-bottom: 0; font-size: clamp(1.6rem, 4vw, 2.4rem); }
+h2 { margin-bottom: .25rem; }
+.eyebrow { color: #8da4c7; font-size: .78rem; font-weight: 750; letter-spacing: .09em; text-transform: uppercase; margin-bottom: .4rem; }
+.session, .pill { color: #bcd0ed; background: #17243a; border-radius: 99px; padding: .45rem .75rem; font-size: .9rem; }
+.notice { padding: .8rem 1rem; margin: 1.5rem 0; border-radius: .7rem; background: #223454; border-left: 4px solid #79a9ff; }
+.notice.error { background: #44242d; border-color: #ff8597; }
+.auth-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; max-width: 760px; margin: 3rem auto; }
+.card { background: #101a2d; border: 1px solid #243653; border-radius: 1rem; padding: 1.2rem; }
+.auth-grid form { display: grid; align-content: start; gap: .9rem; }
+.muted { color: #9cadc6; }
+.tabs { justify-content: flex-start; flex-wrap: wrap; border-bottom: 1px solid #263854; margin-bottom: 1.8rem; }
+.tab { border-radius: .6rem .6rem 0 0; background: transparent; color: #abc0df; }
+.tab.active { color: white; background: #243857; }
+.view { display: none; }.view.active { display: block; }
+.file-picker { display: inline-flex; align-items: center; padding: .68rem 1rem; border-radius: .65rem; cursor: pointer; }
+.file-picker input { display: none; }
+.job-list, .profile-list, #groups-list, #transcript-list { display: grid; gap: .7rem; margin-top: 1.25rem; }
+.job, .profile, .transcript-row, .group-editor { display: grid; gap: .35rem; padding: .9rem 1rem; border: 1px solid #263854; background: #0f192a; border-radius: .7rem; }
+.job { grid-template-columns: 1fr auto; align-items: center; }
+.job small, .profile small { color: #a9bbd5; }
+.status-ready { color: #72ddad; }.status-failed { color: #ff94a3; }.status-processing, .status-queued { color: #f4c36a; }
+.editor-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 1rem; }
+.player-card, .transcript-card { grid-column: 1; }.groups-card { grid-column: 2; grid-row: 1 / span 2; }
+.waveform { height: 76px; border-radius: .5rem; background: repeating-linear-gradient(90deg, #1b2b45 0 4px, #233b61 4px 6px); overflow: hidden; margin-bottom: .8rem; }
+.waveform span { display: block; height: 100%; width: 0; background: rgb(100 165 255 / 42%); }
+audio { width: 100%; }.subtitle-line { margin-top: .8rem; min-height: 2rem; font-size: 1.08rem; }
+.transcript-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.transcript-heading .muted { margin-bottom: 0; }
+.transcript-row { grid-template-columns: auto minmax(0, 1fr); }
+.timestamp { align-self: start; min-width: 4.5rem; background: #26334a; }
+.transcript-body { display: grid; gap: .35rem; }
+.transcript-body small, .group-editor small { color: #a9bbd5; }
+.transcript-edit { resize: vertical; line-height: 1.45; min-height: 3.2rem; }
+.transcript-row.active { border-color: #6da5ff; background: #172844; }
+.group-editor { grid-template-columns: 1fr; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 720px) { .auth-grid, .editor-layout { grid-template-columns: 1fr; } .groups-card, .player-card, .transcript-card { grid-column: auto; grid-row: auto; } .topbar, .view-header, .upload-form, .transcript-heading { align-items: flex-start; flex-direction: column; } .inline-form { width: 100%; } }

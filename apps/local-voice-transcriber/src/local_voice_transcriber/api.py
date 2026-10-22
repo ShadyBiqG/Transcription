@@ -1,0 +1,444 @@
+"""HTTP-композиция изолированного фундамента Transcription Next."""
+
+from __future__ import annotations
+
+import sqlite3
+import time
+from collections import defaultdict, deque
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from os import getpid
+from pathlib import Path
+from typing import Annotated, Literal
+
+from fastapi import Depends, FastAPI, Request, Response, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+from .asr import OfflineAsrAdapter, PackVerificationError
+from .auth import (
+    AdminDependency,
+    ApiError,
+    CsrfSessionDependency,
+    SessionDependency,
+    hash_password,
+    issue_session,
+    normalize_login,
+    session_cookie_max_age,
+    validate_password,
+    verify_password,
+)
+from .config import Settings
+from .database import Database
+from .editor import AsrBaselinePublisher, EditorRepository
+from .health import health_payload
+from .jobs import JobRepository
+from .jobs.dispatcher import OneWorkerDispatcher
+from .jobs.media import FfmpegNormalizer
+from .jobs.pipeline import AsrJobProcessor
+from .routes.editor import router as editor_router
+from .routes.jobs import router as jobs_router
+from .routes.vocabulary import router as vocabulary_router
+from .routes.voice_profiles import router as voice_profiles_router
+from .runtime import ModelPackManifestError, load_asr_model_packs
+from .vector_store import ZeusDBVoiceVectorStore
+from .vocabulary import VocabularyRepository, VocabularyService
+from .voice.repository import VoiceDirectoryRepository
+from .voice.service import VoiceDirectoryService
+
+
+class CredentialsRequest(BaseModel):
+    login: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class AdminCreateRequest(CredentialsRequest):
+    role: Literal["user", "admin"] = "user"
+
+
+class AdminUpdateRequest(BaseModel):
+    role: Literal["user", "admin"] | None = None
+    is_active: bool | None = None
+
+
+@dataclass(slots=True)
+class RateLimiter:
+    """Небольшой process-local limiter для публичных auth запросов."""
+
+    limit: int
+    window_seconds: int = 60
+    _attempts: dict[str, deque[float]] = field(default_factory=lambda: defaultdict(deque))
+
+    def allow(self, key: str) -> bool:
+        now = time.monotonic()
+        attempts = self._attempts[key]
+        while attempts and attempts[0] <= now - self.window_seconds:
+            attempts.popleft()
+        if len(attempts) >= self.limit:
+            return False
+        attempts.append(now)
+        return True
+
+
+def _public_user(user: dict[str, object]) -> dict[str, object]:
+    return {
+        "id": user["id"],
+        "login": user["login"],
+        "role": user["role"],
+        "is_active": bool(user["is_active"]),
+        "created_at": user["created_at"],
+    }
+
+
+def _rate_limit(request: Request) -> None:
+    client_host = request.client.host if request.client else "unknown"
+    key = f"{request.url.path}:{client_host}"
+    if not request.app.state.auth_rate_limiter.allow(key):
+        raise ApiError(429, "rate_limited", "Слишком много попыток, повторите позже")
+
+
+RateLimitDependency = Annotated[None, Depends(_rate_limit)]
+
+
+def _set_session_cookies(
+    response: Response,
+    *,
+    session_token: str,
+    csrf_token: str,
+    expires_at: str,
+    settings: Settings,
+) -> None:
+    max_age = session_cookie_max_age(expires_at)
+    response.set_cookie(
+        key=settings.cookie_name,
+        value=session_token,
+        max_age=max_age,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
+        path="/",
+    )
+    response.set_cookie(
+        key=settings.csrf_cookie_name,
+        value=csrf_token,
+        max_age=max_age,
+        httponly=False,
+        secure=settings.cookie_secure,
+        samesite="lax",
+        path="/",
+    )
+
+
+def _clear_session_cookies(response: Response, settings: Settings) -> None:
+    response.delete_cookie(settings.cookie_name, path="/")
+    response.delete_cookie(settings.csrf_cookie_name, path="/")
+
+
+def create_app(settings: Settings | None = None) -> FastAPI:
+    """Создаёт приложение без запуска legacy-кода и без побочных эффектов импорта."""
+
+    application_settings = settings or Settings.from_env()
+    database = Database(application_settings.database_path)
+    jobs_repository = JobRepository(application_settings.database_path)
+    editor_repository = EditorRepository(application_settings.database_path)
+    voice_directory_repository = VoiceDirectoryRepository(application_settings.database_path)
+    voice_directory_service = VoiceDirectoryService(voice_directory_repository)
+    vocabulary_repository = VocabularyRepository(application_settings.database_path)
+    vocabulary_service = VocabularyService(vocabulary_repository)
+    vector_store = ZeusDBVoiceVectorStore(application_settings.zeusdb_dir)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        app.state.database.initialize()
+        app.state.jobs_repository.migrate()
+        app.state.editor_repository.migrate()
+        app.state.voice_directory_repository.migrate()
+        app.state.vocabulary_repository.migrate()
+        dispatcher, asr_pack_id, asr_reason = _configure_asr_worker(
+            application_settings,
+            app.state.jobs_repository,
+            app.state.editor_repository,
+        )
+        app.state.asr_ready = dispatcher is not None
+        app.state.asr_pack_id = asr_pack_id
+        app.state.asr_unavailable_reason = asr_reason
+        app.state.asr_dispatcher = dispatcher
+        if dispatcher is not None:
+            dispatcher.start()
+        try:
+            yield
+        finally:
+            if dispatcher is not None:
+                await dispatcher.stop()
+
+    app = FastAPI(title="Transcription Next", version="0.1.0", lifespan=lifespan)
+    app.state.settings = application_settings
+    app.state.database = database
+    app.state.jobs_repository = jobs_repository
+    app.state.editor_repository = editor_repository
+    app.state.voice_directory_repository = voice_directory_repository
+    app.state.voice_directory_service = voice_directory_service
+    app.state.vocabulary_repository = vocabulary_repository
+    app.state.vocabulary_service = vocabulary_service
+    app.state.vector_store = vector_store
+    app.state.auth_rate_limiter = RateLimiter(application_settings.auth_rate_limit)
+    app.state.asr_ready = False
+    app.state.asr_pack_id = ""
+    app.state.asr_unavailable_reason = "Локальный ASR model pack не настроен"
+    app.state.asr_dispatcher = None
+
+    @app.exception_handler(ApiError)
+    async def api_error_handler(_: Request, error: ApiError) -> JSONResponse:
+        return JSONResponse(
+            status_code=error.status_code,
+            content={"code": error.code, "message": error.message, "details": error.details},
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(_: Request, error: RequestValidationError) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "code": "validation_error",
+                "message": "Некорректные данные запроса",
+                "details": {"errors": error.errors()},
+            },
+        )
+
+    def public_health() -> JSONResponse:
+        payload, is_ready = health_payload(application_settings, database)
+        return JSONResponse(
+            status_code=status.HTTP_200_OK if is_ready else status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=payload,
+        )
+
+    @app.get("/health", tags=["service"])
+    @app.get("/api/v1/health", tags=["service"])
+    def get_health() -> JSONResponse:
+        return public_health()
+
+    @app.get("/ready", tags=["service"])
+    @app.get("/api/v1/ready", tags=["service"])
+    def get_ready() -> JSONResponse:
+        return public_health()
+
+    static_root = Path(__file__).with_name("static")
+    app.mount("/static", StaticFiles(directory=static_root), name="static")
+
+    @app.get("/", include_in_schema=False)
+    def index() -> FileResponse:
+        return FileResponse(static_root / "index.html")
+
+    @app.post("/api/v1/auth/register", status_code=status.HTTP_201_CREATED, tags=["auth"])
+    def register(credentials: CredentialsRequest, _: RateLimitDependency) -> dict[str, object]:
+        login = normalize_login(credentials.login)
+        validate_password(credentials.password)
+        try:
+            user = database.create_user(
+                login=login, password_hash=hash_password(credentials.password)
+            )
+        except sqlite3.IntegrityError as error:
+            raise ApiError(409, "login_taken", "Этот логин уже занят") from error
+        database.add_audit_event(
+            actor_id=user["id"],
+            action="user_registered",
+            target_type="user",
+            target_id=user["id"],
+        )
+        return {"user": _public_user(user)}
+
+    @app.post("/api/v1/auth/login", tags=["auth"])
+    def login(
+        credentials: CredentialsRequest,
+        response: Response,
+        _: RateLimitDependency,
+    ) -> dict[str, object]:
+        login_value = normalize_login(credentials.login)
+        user = database.get_user_by_login(login_value)
+        if (
+            user is None
+            or not bool(user["is_active"])
+            or not verify_password(credentials.password, user["password_hash"])
+        ):
+            raise ApiError(401, "invalid_credentials", "Неверный логин или пароль")
+        session_token, csrf_token, expires_at = issue_session(
+            database, user_id=user["id"], settings=application_settings
+        )
+        _set_session_cookies(
+            response,
+            session_token=session_token,
+            csrf_token=csrf_token,
+            expires_at=expires_at,
+            settings=application_settings,
+        )
+        database.add_audit_event(
+            actor_id=user["id"],
+            action="session_created",
+            target_type="session",
+            target_id="created",
+        )
+        return {
+            "user": _public_user(user),
+            "csrf_header_name": application_settings.csrf_header_name,
+        }
+
+    @app.get("/api/v1/auth/me", tags=["auth"])
+    def me(session: SessionDependency) -> dict[str, object]:
+        user = database.get_user(session.user_id)
+        if user is None:
+            raise ApiError(401, "authentication_required", "Сессия отсутствует или истекла")
+        return {
+            "user": _public_user(user),
+            "csrf_header_name": application_settings.csrf_header_name,
+        }
+
+    @app.post("/api/v1/auth/logout", status_code=status.HTTP_204_NO_CONTENT, tags=["auth"])
+    def logout(response: Response, session: CsrfSessionDependency) -> Response:
+        database.revoke_session(session.session_id)
+        database.add_audit_event(
+            actor_id=session.user_id,
+            action="session_revoked",
+            target_type="session",
+            target_id=session.session_id,
+        )
+        _clear_session_cookies(response, application_settings)
+        response.status_code = status.HTTP_204_NO_CONTENT
+        return response
+
+    @app.get("/api/v1/admin/users", tags=["admin"])
+    def list_users(_: AdminDependency) -> dict[str, object]:
+        return {"items": database.list_users()}
+
+    @app.post("/api/v1/admin/users", status_code=status.HTTP_201_CREATED, tags=["admin"])
+    def create_user_by_admin(
+        payload: AdminCreateRequest,
+        admin: CsrfSessionDependency,
+    ) -> dict[str, object]:
+        if admin.role != "admin":
+            raise ApiError(403, "admin_required", "Требуется роль администратора")
+        login_value = normalize_login(payload.login)
+        validate_password(payload.password)
+        try:
+            user = database.create_user(
+                login=login_value, password_hash=hash_password(payload.password), role=payload.role
+            )
+        except sqlite3.IntegrityError as error:
+            raise ApiError(409, "login_taken", "Этот логин уже занят") from error
+        database.add_audit_event(
+            actor_id=admin.user_id,
+            action="admin_created_user",
+            target_type="user",
+            target_id=user["id"],
+        )
+        return {"user": _public_user(user)}
+
+    @app.patch("/api/v1/admin/users/{user_id}", tags=["admin"])
+    def update_user_by_admin(
+        user_id: str,
+        payload: AdminUpdateRequest,
+        admin: CsrfSessionDependency,
+    ) -> dict[str, object]:
+        if admin.role != "admin":
+            raise ApiError(403, "admin_required", "Требуется роль администратора")
+        user = database.get_user(user_id)
+        if user is None:
+            raise ApiError(404, "not_found", "Пользователь не найден")
+        if payload.role is None and payload.is_active is None:
+            raise ApiError(422, "no_changes", "Не переданы изменения")
+        removes_last_admin = (
+            user["role"] == "admin"
+            and bool(user["is_active"])
+            and (payload.role == "user" or payload.is_active is False)
+        )
+        if removes_last_admin and database.count_active_admins() <= 1:
+            raise ApiError(
+                409, "last_admin", "Нельзя отключить или понизить последнего администратора"
+            )
+        updated_user = database.update_user(
+            user_id=user_id, role=payload.role, is_active=payload.is_active
+        )
+        database.add_audit_event(
+            actor_id=admin.user_id,
+            action="admin_updated_user",
+            target_type="user",
+            target_id=user_id,
+        )
+        return {"user": _public_user(updated_user or user)}
+
+    @app.get("/api/v1/admin/overview", tags=["admin"])
+    def admin_overview(admin: AdminDependency) -> dict[str, object]:
+        """Возвращает только агрегированные технические данные без content jobs."""
+
+        health, _ = health_payload(application_settings, database)
+        vector_store_status = vector_store.status()
+        return {
+            "service": health["service"],
+            "instance_id": health["instance_id"],
+            "checks": health["checks"],
+            "users_count": len(database.list_users()),
+            "active_voice_profiles": len(voice_directory_service.list_profiles()),
+            "voice_vector_store": {
+                "availability": vector_store_status.availability,
+                "reason": vector_store_status.reason,
+            },
+            "queue": {"configured": True, "worker": "not_configured"},
+            "asr": {
+                "ready": app.state.asr_ready,
+                "pack_id": app.state.asr_pack_id or None,
+                "reason": app.state.asr_unavailable_reason,
+            },
+            "actor_id": admin.user_id,
+        }
+
+    app.include_router(jobs_router)
+    app.include_router(editor_router)
+    app.include_router(voice_profiles_router)
+    app.include_router(vocabulary_router)
+
+    return app
+
+
+def _configure_asr_worker(
+    settings: Settings,
+    repository: JobRepository,
+    editor_repository: EditorRepository,
+) -> tuple[OneWorkerDispatcher | None, str, str | None]:
+    """Собирает worker только из проверенных локальных ресурсов."""
+
+    if settings.models_dir is None or settings.asr_manifest_path is None:
+        return None, "", "Не задан манифест локального ASR/VAD model pack"
+    if settings.ffmpeg_path is None:
+        return None, "", "Не задан путь к локальному FFmpeg"
+    if not settings.ffmpeg_path.is_file():
+        return None, "", "Локальный FFmpeg недоступен"
+    try:
+        packs = load_asr_model_packs(settings.asr_manifest_path, models_root=settings.models_dir)
+        adapter = OfflineAsrAdapter(
+            packs.asr,
+            models_root=settings.models_dir,
+            language=packs.language,
+            vad_pack=packs.vad,
+        )
+        adapter.verify_packs()
+    except (ModelPackManifestError, PackVerificationError):
+        return None, "", "Локальный ASR/VAD model pack не прошёл проверку"
+    normalizer = FfmpegNormalizer(settings.ffmpeg_path, jobs_root=settings.data_dir / "jobs")
+    processor = AsrJobProcessor(
+        repository,
+        normalizer,
+        adapter,
+        jobs_root=settings.data_dir / "jobs",
+        publisher=AsrBaselinePublisher(repository, editor_repository),
+    )
+    dispatcher = OneWorkerDispatcher(
+        repository,
+        processor,
+        worker_id=f"{settings.instance_id}-{getpid()}",
+    )
+    return dispatcher, packs.asr.pack_id, None
+
+
+app = create_app()
