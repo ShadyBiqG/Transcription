@@ -3,6 +3,7 @@ param(
     [string]$RepositoryPath = (Join-Path $PSScriptRoot ".."),
     [string]$DataPath = "C:\ProgramData\TranscriptionNext",
     [ValidateRange(1, 65535)][int]$Port = 8010,
+    [string]$ServiceAccount,
     [string]$BootstrapAdminLogin,
     [securestring]$BootstrapAdminPassword,
     [switch]$UpdateRepository,
@@ -11,12 +12,42 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+if ([string]::IsNullOrWhiteSpace($ServiceAccount)) {
+    $ServiceAccount = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+}
+
 function Require-Command([string]$Name) {
     $command = Get-Command $Name -ErrorAction SilentlyContinue
     if ($null -eq $command) {
         throw "Required command was not found: $Name"
     }
     return $command.Source
+}
+
+function Grant-DataRootModifyAccess([string]$DataRoot, [string]$Account) {
+    $accessRule = "${Account}:(OI)(CI)M"
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $result = & icacls $DataRoot /grant $accessRule /T /C 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not grant Modify access to $Account for $DataRoot. $($result | Out-String)"
+        }
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+}
+
+function Assert-ResolvableWindowsAccount([string]$Account) {
+    try {
+        [void]([System.Security.Principal.NTAccount]::new($Account).Translate(
+            [System.Security.Principal.SecurityIdentifier]
+        ))
+    }
+    catch {
+        throw "The Windows service account could not be resolved: $Account"
+    }
 }
 
 function Ensure-EnvironmentValue(
@@ -105,6 +136,8 @@ if ($UpdateRepository) {
 
 $dataRoot = [System.IO.Path]::GetFullPath($DataPath)
 New-Item -ItemType Directory -Force -Path $dataRoot, (Join-Path $dataRoot "jobs"), (Join-Path $dataRoot "models"), (Join-Path $dataRoot "logs") | Out-Null
+Assert-ResolvableWindowsAccount $ServiceAccount
+Grant-DataRootModifyAccess $dataRoot $ServiceAccount
 
 & $uv python install 3.12
 if ($LASTEXITCODE -ne 0) {
@@ -212,6 +245,7 @@ if ($OpenFirewall) {
 
 Write-Host "Transcription Next is ready."
 Write-Host "Data: $dataRoot"
+Write-Host "Data access account: $ServiceAccount"
 Write-Host "Configuration: $environmentFile"
 Write-Host "Launch: powershell -ExecutionPolicy Bypass -File $launcher"
 Write-Host "Use a separate service account without access to legacy data."

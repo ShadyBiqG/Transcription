@@ -55,7 +55,14 @@ BootstrapAdminLogin и BootstrapAdminPassword (SecureString).
 установщик Microsoft потребует перезагрузку, перезагрузите сервер и повторите
 ту же команду установки.
 
-Назначьте отдельную service account без ACL на legacy data.
+Назначьте отдельную service account без ACL на legacy data. Установщик выдаёт
+ей Modify только на отдельный `DataPath`, чтобы SQLite мог создать журнал и
+миграции при запуске. По умолчанию service account — текущая учётная запись,
+выполняющая установку. Поэтому для запуска launcher из `C:\Users\AI` установку
+тоже выполняйте от этой же учётной записи; UAC-повышение не меняет её имя. Для
+другой учётной записи передайте
+`-ServiceAccount "DOMAIN\service-user"` при прямом запуске
+`install-windows.ps1`.
 `NEXT_COOKIE_SECURE=true` предполагает HTTPS перед reverse proxy; прямой
 HTTP-доступ к 8010 предназначен только для локальной диагностики.
 
