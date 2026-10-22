@@ -134,6 +134,17 @@ class SherpaDiarizationAdapter:
                     f"В manifest отсутствует {label}."
                 )
 
+    def preflight(self) -> None:
+        """Проверяет, что Sherpa-ONNX создаёт diarizer из локального voice pack."""
+
+        self.verify_pack()
+        try:
+            self._loader(self._pack, self._parameters)
+        except DiarizationPackVerificationError:
+            raise
+        except Exception as error:
+            raise DiarizationRuntimeError("Локальный voice pack не удалось загрузить.") from error
+
     def diarize(self, wav_path: Path) -> tuple[DiarizationInterval, ...]:
         """Обрабатывает только mono PCM WAV из candidate jobs root."""
 

@@ -64,6 +64,17 @@ class OfflineAsrAdapter:
         if self._vad_pack is not None:
             self._verify_pack(self._vad_pack)
 
+    def preflight(self) -> None:
+        """Проверяет, что ASR/VAD-пакеты действительно открываются локальным runtime."""
+
+        self.verify_packs()
+        try:
+            self._loader(self._pack, self._vad_pack)
+        except PackVerificationError:
+            raise
+        except Exception as error:
+            raise AsrRuntimeError("Локальный ASR/VAD model pack не удалось загрузить.") from error
+
     def transcribe(self, wav_path: Path) -> AsrRecognition:
         self.verify_packs()
         if wav_path.suffix.lower() != ".wav" or not wav_path.is_file():

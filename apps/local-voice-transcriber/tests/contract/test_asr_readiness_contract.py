@@ -4,15 +4,20 @@ from __future__ import annotations
 
 from hashlib import sha256
 
+import pytest
 from fastapi.testclient import TestClient
 
 from local_voice_transcriber.api import create_app
+from local_voice_transcriber.asr import OfflineAsrAdapter
 from local_voice_transcriber.config import Settings
+from local_voice_transcriber.diarization import SherpaDiarizationAdapter
+from local_voice_transcriber.voice.embedding import SherpaVoiceEmbeddingAdapter
 
 
 def test_verified_local_manifest_enables_asr_worker_without_loading_model_from_network(
-    settings: Settings,
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(OfflineAsrAdapter, "preflight", lambda _self: None)
     models_root = settings.data_dir / "models"
     asr_directory = models_root / "gigaam"
     asr_directory.mkdir(parents=True)
@@ -58,8 +63,11 @@ def test_verified_local_manifest_enables_asr_worker_without_loading_model_from_n
 
 
 def test_verified_voice_pack_enables_group_diarization_without_network(
-    settings: Settings,
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(OfflineAsrAdapter, "preflight", lambda _self: None)
+    monkeypatch.setattr(SherpaDiarizationAdapter, "preflight", lambda _self: None)
+    monkeypatch.setattr(SherpaVoiceEmbeddingAdapter, "embedding_dimension", lambda _self: 192)
     models_root = settings.data_dir / "models"
     asr_directory = models_root / "gigaam"
     voice_directory = models_root / "voice"

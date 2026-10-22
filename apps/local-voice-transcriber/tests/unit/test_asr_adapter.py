@@ -8,7 +8,12 @@ from types import ModuleType
 
 import pytest
 
-from local_voice_transcriber.asr import LocalModelPack, OfflineAsrAdapter, PackVerificationError
+from local_voice_transcriber.asr import (
+    AsrRuntimeError,
+    LocalModelPack,
+    OfflineAsrAdapter,
+    PackVerificationError,
+)
 from local_voice_transcriber.asr.adapter import _load_onnx_asr_locally
 
 
@@ -122,6 +127,39 @@ def test_model_pack_must_be_hash_verified_and_inside_models_root(tmp_path: Path)
             language="ru",
             loader=lambda _pack, _vad: FakeRecognizer([]),
         ).verify_packs()
+
+
+def test_preflight_loads_the_local_runtime_without_recognizing_audio(tmp_path: Path) -> None:
+    pack, root = make_pack(tmp_path)
+    calls: list[tuple[LocalModelPack, LocalModelPack | None]] = []
+
+    def loader(received_pack: LocalModelPack, vad_pack: LocalModelPack | None) -> FakeRecognizer:
+        calls.append((received_pack, vad_pack))
+        return FakeRecognizer([])
+
+    adapter = OfflineAsrAdapter(
+        pack,
+        models_root=root,
+        language="ru",
+        loader=loader,
+    )
+
+    adapter.preflight()
+
+    assert calls == [(pack, None)]
+
+
+def test_preflight_normalizes_runtime_loading_failure(tmp_path: Path) -> None:
+    pack, root = make_pack(tmp_path)
+    adapter = OfflineAsrAdapter(
+        pack,
+        models_root=root,
+        language="ru",
+        loader=lambda _pack, _vad: (_ for _ in ()).throw(ValueError("broken runtime")),
+    )
+
+    with pytest.raises(AsrRuntimeError, match="не удалось загрузить"):
+        adapter.preflight()
 
 
 def test_default_loader_forces_cpu_offline_and_local_model_directories(

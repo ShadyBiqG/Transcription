@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .asr import OfflineAsrAdapter, PackVerificationError
+from .asr import AsrRuntimeError, OfflineAsrAdapter, PackVerificationError
 from .auth import (
     AdminDependency,
     ApiError,
@@ -38,6 +38,7 @@ from .database import Database
 from .diarization import (
     DiarizationInterval,
     DiarizationPackVerificationError,
+    DiarizationRuntimeError,
     LocalDiarizationPack,
     SherpaDiarizationAdapter,
 )
@@ -559,8 +560,8 @@ def _configure_asr_worker(
             language=packs.language,
             vad_pack=packs.vad,
         )
-        asr_adapter.verify_packs()
-    except (ModelPackManifestError, PackVerificationError):
+        asr_adapter.preflight()
+    except (AsrRuntimeError, ModelPackManifestError, PackVerificationError):
         return None, "", "Локальный ASR/VAD model pack не прошёл проверку", None, None, None, None
     diarizer = None
     embedding_adapter = None
@@ -575,13 +576,20 @@ def _configure_asr_worker(
                 models_root=settings.models_dir,
                 audio_root=settings.data_dir / "jobs",
             )
-            diarizer.verify_pack()
+            diarizer.preflight()
             embedding_adapter = SherpaVoiceEmbeddingAdapter(
                 packs.diarization,
                 models_root=settings.models_dir,
                 audio_root=settings.data_dir,
             )
-            embedding_adapter.verify_pack()
+            actual_embedding_dimension = embedding_adapter.embedding_dimension()
+            if (
+                packs.diarization.embedding_dimension is not None
+                and packs.diarization.embedding_dimension != actual_embedding_dimension
+            ):
+                raise VoiceEmbeddingRuntimeError(
+                    "Размерность embedding в manifest не совпадает с локальным voice pack."
+                )
             voice_pack_id = packs.diarization.pack_id
             diarization_pack = packs.diarization
             if packs.diarization.embedding_dimension is not None:
@@ -593,7 +601,12 @@ def _configure_asr_worker(
                     thresholds=settings.voice_matching_thresholds,
                 )
             voice_reason = None
-        except (DiarizationPackVerificationError, VoiceEmbeddingPackVerificationError):
+        except (
+            DiarizationPackVerificationError,
+            DiarizationRuntimeError,
+            VoiceEmbeddingPackVerificationError,
+            VoiceEmbeddingRuntimeError,
+        ):
             diarizer = None
             embedding_adapter = None
             diarization_pack = None

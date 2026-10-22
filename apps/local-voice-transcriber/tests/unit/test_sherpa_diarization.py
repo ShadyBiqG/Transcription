@@ -152,6 +152,26 @@ def test_requires_sample_rate_expected_by_diarizer(tmp_path: Path) -> None:
         adapter.diarize(wav_path)
 
 
+def test_preflight_constructs_diarizer_without_processing_audio(tmp_path: Path) -> None:
+    pack, models_root, audio_root = make_pack(tmp_path)
+    calls: list[tuple[LocalDiarizationPack, DiarizationParameters]] = []
+    adapter = SherpaDiarizationAdapter(
+        pack,
+        models_root=models_root,
+        audio_root=audio_root,
+        loader=lambda received_pack, parameters: _capture_loader(
+            calls,
+            received_pack,
+            parameters,
+            FakeDiarizer([]),
+        ),
+    )
+
+    adapter.preflight()
+
+    assert calls == [(pack, DiarizationParameters())]
+
+
 def test_default_loader_uses_public_sherpa_offline_diarization_api(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

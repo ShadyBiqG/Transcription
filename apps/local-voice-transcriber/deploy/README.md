@@ -2,7 +2,7 @@
 
 Запустите install-windows.ps1 из этого каталога. Пример:
 
-    powershell -ExecutionPolicy Bypass -File .\deploy\install-windows.ps1 -RepositoryPath . -DataPath C:\ProgramData\TranscriptionNext
+    powershell -ExecutionPolicy Bypass -File .\deploy\install-windows.ps1 -RepositoryPath . -DataPath E:\TranscriptionData
 
 ## Первая установка из Git через BAT
 
@@ -18,7 +18,7 @@ install-from-git.bat "<URL Git-репозитория>" "C:\Services\Transcripti
 одна строка без символов переноса:
 
 ```powershell
-& "C:\Users\AI\install-from-git.bat" "https://github.com/ShadyBiqG/Transcription.git" "C:\Services\TranscriptionNext" "C:\ProgramData\TranscriptionNext" "codex/transcription-next"
+& "C:\Users\AI\install-from-git-07e57ab.bat" "https://github.com/ShadyBiqG/Transcription.git" "C:\Services\TranscriptionNext" "E:\TranscriptionData" "codex/transcription-next" --update
 ```
 
 Сам BAT намеренно содержит только ASCII-символы: `cmd.exe` может разобрать
@@ -36,15 +36,19 @@ data root и branch. Не указывайте каталог legacy-прило�
 OpenFirewall открывает candidate port в профиле Private.
 
 Скрипт создаёт отдельный data root, локальное окружение через uv и файл
-candidate.env.ps1 вне репозитория. При первом запуске он запрашивает логин и
-пароль первого администратора, создаёт его через CLI приложения и не сохраняет
-пароль в файле конфигурации. Для unattended-установки передайте
-BootstrapAdminLogin и BootstrapAdminPassword (SecureString).
+candidate.env.ps1 вне репозитория. Затем он автоматически скачивает в этот
+data root закреплённые ASR, VAD, диаризационную и голосовую модели, а также
+FFmpeg. Каждый файл сверяется по SHA-256, а до создания администратора
+установщик действительно открывает ASR/VAD, Sherpa-диаризацию и embedding
+extractor локально. Это первая загрузка примерно 1 ГБ; на диске с data root
+должно быть не менее 5 ГБ свободного места. При первом запуске скрипт
+запрашивает логин и пароль первого администратора, создаёт его через CLI
+приложения и не сохраняет пароль в файле конфигурации. Для unattended-установки
+передайте BootstrapAdminLogin и BootstrapAdminPassword (SecureString).
 
-Доставьте model packs в созданный каталог models до запуска и назначьте
-отдельную service account без ACL на legacy data. `NEXT_COOKIE_SECURE=true`
-предполагает HTTPS перед reverse proxy; прямой HTTP-доступ к 8010 предназначен
-только для локальной диагностики.
+Назначьте отдельную service account без ACL на legacy data.
+`NEXT_COOKIE_SECURE=true` предполагает HTTPS перед reverse proxy; прямой
+HTTP-доступ к 8010 предназначен только для локальной диагностики.
 
 Для одного `DataPath` поддерживается только один процесс candidate-приложения.
 Не запускайте второй launcher и не добавляйте Uvicorn workers: durable writer
