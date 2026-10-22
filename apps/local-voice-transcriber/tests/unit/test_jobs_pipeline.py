@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from local_voice_transcriber.asr import AsrRecognition, AsrSegment
+from local_voice_transcriber.diarization import DiarizationInterval
 from local_voice_transcriber.jobs.media import FfmpegNormalizer, MediaNormalizationError
 from local_voice_transcriber.jobs.pipeline import AsrJobProcessor, JobCancelled
 from local_voice_transcriber.jobs.repository import JobRepository
@@ -42,9 +43,36 @@ class FakePublisher:
         self._repository = repository
         self.calls: list[tuple[str, str]] = []
 
-    def publish(self, job, run) -> None:  # type: ignore[no-untyped-def]
+    def publish(self, job, run, *, diarization_intervals=()) -> None:  # type: ignore[no-untyped-def]
         assert self._repository.source_segments(run.id)
         self.calls.append((job.id, run.id))
+
+
+class FakeDiarizer:
+    def __init__(self) -> None:
+        self.paths: list[Path] = []
+
+    def diarize(self, wav_path: Path) -> tuple[DiarizationInterval, ...]:
+        self.paths.append(wav_path)
+        return (
+            DiarizationInterval(
+                interval_id="interval-1",
+                start_ms=0,
+                end_ms=1_000,
+                raw_speaker_label="0",
+                speaker_group_id="local-speaker:0",
+            ),
+        )
+
+
+class CapturingPublisher(FakePublisher):
+    def __init__(self, repository: JobRepository) -> None:
+        super().__init__(repository)
+        self.intervals: tuple[DiarizationInterval, ...] = ()
+
+    def publish(self, job, run, *, diarization_intervals=()) -> None:  # type: ignore[no-untyped-def]
+        self.intervals = tuple(diarization_intervals)
+        super().publish(job, run, diarization_intervals=diarization_intervals)
 
 
 def test_pipeline_persists_immutable_asr_source_after_normalization(tmp_path: Path) -> None:
@@ -84,6 +112,25 @@ def test_pipeline_publishes_editor_baseline_only_after_source_is_immutable(tmp_p
     asyncio.run(processor.process(job, run, lambda: False))
 
     assert publisher.calls == [(job.id, run.id)]
+
+
+def test_pipeline_passes_local_diarization_groups_to_publisher(tmp_path: Path) -> None:
+    repository, jobs_root, job, run = claimed_run(tmp_path)
+    publisher = CapturingPublisher(repository)
+    diarizer = FakeDiarizer()
+    processor = AsrJobProcessor(
+        repository,
+        FakeNormalizer(),
+        FakeAsr(),
+        jobs_root=jobs_root,
+        publisher=publisher,
+        diarizer=diarizer,
+    )
+
+    asyncio.run(processor.process(job, run, lambda: False))
+
+    assert diarizer.paths == [jobs_root / job.id / "runs" / run.id / "normalized.wav"]
+    assert [item.speaker_group_id for item in publisher.intervals] == ["local-speaker:0"]
 
 
 def test_ffmpeg_normalizer_rejects_media_outside_candidate_jobs_root(tmp_path: Path) -> None:

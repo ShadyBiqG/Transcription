@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Any
 
 from local_voice_transcriber.asr import LocalModelPack
+from local_voice_transcriber.diarization import LocalDiarizationPack
 
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
@@ -21,11 +22,12 @@ class ModelPackManifestError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class AsrModelPacks:
-    """Проверенная конфигурация локального ASR и необязательного VAD."""
+    """Проверенная конфигурация локальных ASR, VAD и voice-packs."""
 
     language: str
     asr: LocalModelPack
     vad: LocalModelPack | None
+    diarization: LocalDiarizationPack | None
 
 
 def load_asr_model_packs(manifest_path: Path, *, models_root: Path) -> AsrModelPacks:
@@ -40,7 +42,13 @@ def load_asr_model_packs(manifest_path: Path, *, models_root: Path) -> AsrModelP
 
     vad_raw = manifest.get("vad")
     vad = None if vad_raw is None else _parse_pack(manifest, field="vad", models_root=root)
-    return AsrModelPacks(language=language, asr=asr, vad=vad)
+    diarization_raw = manifest.get("diarization")
+    diarization = (
+        None
+        if diarization_raw is None
+        else _parse_diarization_pack(manifest, models_root=root)
+    )
+    return AsrModelPacks(language=language, asr=asr, vad=vad, diarization=diarization)
 
 
 def _read_manifest(path: Path) -> Mapping[str, Any]:
@@ -98,6 +106,44 @@ def _parse_pack(
         pack_id=pack_id,
         model_name=model_name,
         directory=directory,
+        files=MappingProxyType(files),
+    )
+
+
+def _parse_diarization_pack(
+    manifest: Mapping[str, Any],
+    *,
+    models_root: Path,
+) -> LocalDiarizationPack:
+    field = "diarization"
+    raw_pack = manifest.get(field)
+    if not isinstance(raw_pack, dict):
+        raise ModelPackManifestError(f"Раздел {field} манифеста должен быть объектом")
+    pack_id = _required_text(raw_pack, "pack_id", context=f"раздел {field}")
+    directory_value = _required_text(raw_pack, "directory", context=f"раздел {field}")
+    directory = _resolve_relative_path(
+        directory_value,
+        base=models_root,
+        allowed_root=models_root,
+        field_name=f"directory раздела {field}",
+        expected="directory",
+    )
+    segmentation_model = _required_text(
+        raw_pack,
+        "segmentation_model",
+        context=f"раздел {field}",
+    )
+    embedding_model = _required_text(
+        raw_pack,
+        "embedding_model",
+        context=f"раздел {field}",
+    )
+    files = _parse_files(raw_pack, pack_field=field, directory=directory, models_root=models_root)
+    return LocalDiarizationPack(
+        pack_id=pack_id,
+        directory=directory,
+        segmentation_model=segmentation_model,
+        embedding_model=embedding_model,
         files=MappingProxyType(files),
     )
 

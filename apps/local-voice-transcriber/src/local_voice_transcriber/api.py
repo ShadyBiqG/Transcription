@@ -33,6 +33,10 @@ from .auth import (
 )
 from .config import Settings
 from .database import Database
+from .diarization import (
+    DiarizationPackVerificationError,
+    SherpaDiarizationAdapter,
+)
 from .editor import AsrBaselinePublisher, EditorRepository
 from .health import health_payload
 from .jobs import JobRepository
@@ -157,7 +161,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.editor_repository.migrate()
         app.state.voice_directory_repository.migrate()
         app.state.vocabulary_repository.migrate()
-        dispatcher, asr_pack_id, asr_reason = _configure_asr_worker(
+        dispatcher, asr_pack_id, asr_reason, voice_pack_id, voice_reason = _configure_asr_worker(
             application_settings,
             app.state.jobs_repository,
             app.state.editor_repository,
@@ -166,6 +170,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.asr_pack_id = asr_pack_id
         app.state.asr_unavailable_reason = asr_reason
         app.state.asr_dispatcher = dispatcher
+        app.state.voice_pack_id = voice_pack_id
+        app.state.voice_diarization_ready = voice_pack_id is not None
+        app.state.voice_diarization_reason = voice_reason
         if dispatcher is not None:
             dispatcher.start()
         try:
@@ -189,6 +196,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.asr_pack_id = ""
     app.state.asr_unavailable_reason = "Локальный ASR model pack не настроен"
     app.state.asr_dispatcher = None
+    app.state.voice_pack_id = None
+    app.state.voice_diarization_ready = False
+    app.state.voice_diarization_reason = "Локальный voice pack не настроен"
 
     @app.exception_handler(ApiError)
     async def api_error_handler(_: Request, error: ApiError) -> JSONResponse:
@@ -390,6 +400,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "pack_id": app.state.asr_pack_id or None,
                 "reason": app.state.asr_unavailable_reason,
             },
+            "diarization": {
+                "ready": app.state.voice_diarization_ready,
+                "pack_id": app.state.voice_pack_id,
+                "reason": app.state.voice_diarization_reason,
+            },
             "actor_id": admin.user_id,
         }
 
@@ -405,40 +420,56 @@ def _configure_asr_worker(
     settings: Settings,
     repository: JobRepository,
     editor_repository: EditorRepository,
-) -> tuple[OneWorkerDispatcher | None, str, str | None]:
+) -> tuple[OneWorkerDispatcher | None, str, str | None, str | None, str | None]:
     """Собирает worker только из проверенных локальных ресурсов."""
 
     if settings.models_dir is None or settings.asr_manifest_path is None:
-        return None, "", "Не задан манифест локального ASR/VAD model pack"
+        return None, "", "Не задан манифест локального ASR/VAD model pack", None, None
     if settings.ffmpeg_path is None:
-        return None, "", "Не задан путь к локальному FFmpeg"
+        return None, "", "Не задан путь к локальному FFmpeg", None, None
     if not settings.ffmpeg_path.is_file():
-        return None, "", "Локальный FFmpeg недоступен"
+        return None, "", "Локальный FFmpeg недоступен", None, None
     try:
         packs = load_asr_model_packs(settings.asr_manifest_path, models_root=settings.models_dir)
-        adapter = OfflineAsrAdapter(
+        asr_adapter = OfflineAsrAdapter(
             packs.asr,
             models_root=settings.models_dir,
             language=packs.language,
             vad_pack=packs.vad,
         )
-        adapter.verify_packs()
+        asr_adapter.verify_packs()
     except (ModelPackManifestError, PackVerificationError):
-        return None, "", "Локальный ASR/VAD model pack не прошёл проверку"
+        return None, "", "Локальный ASR/VAD model pack не прошёл проверку", None, None
+    diarizer = None
+    voice_pack_id: str | None = None
+    voice_reason: str | None = "Локальный voice pack не настроен"
+    if packs.diarization is not None:
+        try:
+            diarizer = SherpaDiarizationAdapter(
+                packs.diarization,
+                models_root=settings.models_dir,
+                audio_root=settings.data_dir / "jobs",
+            )
+            diarizer.verify_pack()
+            voice_pack_id = packs.diarization.pack_id
+            voice_reason = None
+        except DiarizationPackVerificationError:
+            voice_reason = "Локальный voice pack не прошёл проверку"
     normalizer = FfmpegNormalizer(settings.ffmpeg_path, jobs_root=settings.data_dir / "jobs")
     processor = AsrJobProcessor(
         repository,
         normalizer,
-        adapter,
+        asr_adapter,
         jobs_root=settings.data_dir / "jobs",
         publisher=AsrBaselinePublisher(repository, editor_repository),
+        diarizer=diarizer,
     )
     dispatcher = OneWorkerDispatcher(
         repository,
         processor,
         worker_id=f"{settings.instance_id}-{getpid()}",
     )
-    return dispatcher, packs.asr.pack_id, None
+    return dispatcher, packs.asr.pack_id, None, voice_pack_id, voice_reason
 
 
 app = create_app()

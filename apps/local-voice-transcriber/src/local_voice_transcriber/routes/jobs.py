@@ -155,6 +155,7 @@ def create_run(
         job_id=job.id,
         request_id=idempotency_key,
         asr_pack_id=request.app.state.asr_pack_id,
+        voice_pack_id=request.app.state.voice_pack_id,
     )
     return {"run": _run_projection(run)}
 
@@ -214,6 +215,26 @@ def get_speaker_groups(
     session: SessionDependency,
 ) -> dict[str, object]:
     _find_owned_job(_repository(request), job_id, session.user_id)
-    # Интерфейс стабилен до подключения Sherpa-адаптера: он не подменяет пустой
-    # результат выдуманными метками и не раскрывает данных другого владельца.
-    return {"items": []}
+    try:
+        revision = request.app.state.editor_repository.get_current_revision(
+            owner_id=session.user_id,
+            job_id=job_id,
+        )
+    except KeyError:
+        return {"items": []}
+    return {
+        "items": [
+            {
+                "id": group.speaker_group_id,
+                "label": group.label_snapshot,
+                "profile_id": group.profile_id,
+                "assignment_status": group.assignment_status,
+                "requires_review": any(
+                    group.speaker_group_id in segment.speaker_group_ids
+                    and segment.requires_review
+                    for segment in revision.segments
+                ),
+            }
+            for group in revision.groups
+        ]
+    }
