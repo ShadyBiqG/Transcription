@@ -4,6 +4,23 @@
 
     powershell -ExecutionPolicy Bypass -File .\deploy\install-windows.ps1 -RepositoryPath . -DataPath C:\ProgramData\TranscriptionNext
 
+## Первая установка из Git через BAT
+
+Когда на сервере ещё нет рабочей копии, достаточно заранее скопировать на него
+единственный [install-from-git.bat](install-from-git.bat), а затем выполнить в
+`cmd.exe`:
+
+```bat
+install-from-git.bat "<URL Git-репозитория>" "C:\Services\TranscriptionNext" "C:\ProgramData\TranscriptionNext" "<опубликованная-ветка-кандидата>"
+```
+
+Первые четыре аргумента обязательны: URL, новый каталог для clone, отдельный
+data root и branch. Не указывайте каталог legacy-приложения ни как clone, ни
+как data root. После опубликования новой версии повторите ту же команду с
+`--update`; перед `git pull --ff-only` BAT проверит origin, ветку и чистоту
+рабочей директории. Любое расхождение прекращает установку без перезаписи
+файлов.
+
 Ключ UpdateRepository выполняет только безопасный git pull --ff-only. Ключ
 OpenFirewall открывает candidate port в профиле Private.
 

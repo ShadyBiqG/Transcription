@@ -43,6 +43,18 @@ uv run local-voice-transcriber --create-admin admin-local
 администратора. Пароль не записывается в конфигурационный файл. Legacy на порту
 8000 не изменяется. Подробнее: `deploy/README.md`.
 
+Если на сервере ещё нет исходного кода, скопируйте туда один файл
+`deploy/install-from-git.bat` и выполните его из `cmd.exe`. Он сам клонирует
+указанную ветку, затем запускает PowerShell-установщик:
+
+```bat
+install-from-git.bat "<URL Git-репозитория>" "C:\Services\TranscriptionNext" "C:\ProgramData\TranscriptionNext" "<опубликованная-ветка-кандидата>"
+```
+
+Для обновления этого же чистого клона добавьте `--update`. Скрипт допускает
+только `git pull --ff-only`, сверяет URL `origin` и активную ветку, поэтому не
+перезаписывает другой репозиторий или локальные правки.
+
 Требования к проверенным локально доставленным ASR/VAD model packs:
 [docs/model-packs.md](docs/model-packs.md).
 
