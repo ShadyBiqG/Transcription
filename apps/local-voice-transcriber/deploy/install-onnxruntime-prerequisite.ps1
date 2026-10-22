@@ -16,6 +16,12 @@ function Test-MicrosoftSignature([string]$Path) {
     }
 }
 
+function Invoke-VisualCppSetup([string]$Action, [string]$InstallerPath, [string]$LogPath) {
+    $argumentLine = '/' + $Action + ' /quiet /norestart /log "' + $LogPath + '"'
+    $process = Start-Process -FilePath $InstallerPath -ArgumentList $argumentLine -Verb RunAs -Wait -PassThru
+    return $process.ExitCode
+}
+
 $dataDirectory = [System.IO.Path]::GetFullPath($DataRoot)
 $bootstrapDirectory = Join-Path $dataDirectory "tools\bootstrap"
 $installerPath = Join-Path $bootstrapDirectory "vc_redist.x64.exe"
@@ -39,11 +45,14 @@ if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
 
 Test-MicrosoftSignature $installerPath
 Write-Host "Installing Microsoft Visual C++ Runtime prerequisite..."
-$argumentLine = '/install /quiet /norestart /log "' + $logPath + '"'
-$process = Start-Process -FilePath $installerPath -ArgumentList $argumentLine -Verb RunAs -Wait -PassThru
-if ($process.ExitCode -eq 3010) {
+$exitCode = Invoke-VisualCppSetup "install" $installerPath $logPath
+if ($exitCode -eq 1638) {
+    Write-Host "Repairing the existing Microsoft Visual C++ Runtime..."
+    $exitCode = Invoke-VisualCppSetup "repair" $installerPath $logPath
+}
+if ($exitCode -eq 3010) {
     throw "Microsoft Visual C++ Runtime was installed, but Windows must be restarted before continuing."
 }
-if ($process.ExitCode -notin @(0, 1638)) {
-    throw "Microsoft Visual C++ Runtime setup failed with exit code $($process.ExitCode)."
+if ($exitCode -ne 0) {
+    throw "Microsoft Visual C++ Runtime setup failed with exit code $exitCode. See $logPath"
 }

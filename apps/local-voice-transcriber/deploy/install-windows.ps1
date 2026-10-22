@@ -55,6 +55,28 @@ function Test-OnnxRuntimeImport([string]$UvPath, [string]$ApplicationRoot) {
     }
 }
 
+function Get-OnnxRuntimeDiagnostic([string]$UvPath, [string]$ApplicationRoot) {
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $detail = & $UvPath run --project $ApplicationRoot --no-sync python -c "import onnxruntime" 2>&1
+        return (($detail | Out-String).Trim())
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+}
+
+function Get-WindowsDescription() {
+    try {
+        $operatingSystem = Get-CimInstance -ClassName Win32_OperatingSystem
+        return "$($operatingSystem.Caption), version $($operatingSystem.Version), build $($operatingSystem.BuildNumber)"
+    }
+    catch {
+        return "Windows version could not be determined."
+    }
+}
+
 $appRoot = (Resolve-Path -LiteralPath $RepositoryPath).Path
 if (-not (Test-Path -LiteralPath (Join-Path $appRoot "pyproject.toml") -PathType Leaf)) {
     throw "Transcription Next pyproject.toml was not found in $appRoot"
@@ -88,7 +110,9 @@ if (-not (Test-OnnxRuntimeImport $uv $appRoot)) {
     }
     & $runtimePrerequisiteInstaller -DataRoot $dataRoot
     if ($LASTEXITCODE -ne 0 -or -not (Test-OnnxRuntimeImport $uv $appRoot)) {
-        throw "ONNX Runtime could not load after the Microsoft Visual C++ Runtime installation."
+        $runtimeDiagnostic = Get-OnnxRuntimeDiagnostic $uv $appRoot
+        $windowsDescription = Get-WindowsDescription
+        throw "ONNX Runtime could not load after the Microsoft Visual C++ Runtime installation. Windows: $windowsDescription. VC++ log: $(Join-Path $dataRoot 'logs\vc-redist-install.log'). Import detail: $runtimeDiagnostic"
     }
 }
 
