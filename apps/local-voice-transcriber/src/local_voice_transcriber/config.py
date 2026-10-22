@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from .voice.models import MatchingThresholds, QualityPolicy
 
 
 class ConfigurationError(ValueError):
@@ -31,6 +33,34 @@ def _as_positive_int(value: str, *, name: str, minimum: int = 1) -> int:
     return result
 
 
+def _as_non_negative_float(value: str, *, name: str) -> float:
+    try:
+        result = float(value)
+    except ValueError as error:
+        raise ConfigurationError(f"{name} должен быть числом") from error
+    if result < 0:
+        raise ConfigurationError(f"{name} не может быть отрицательным")
+    return result
+
+
+def _optional_non_negative_float(value: str | None, *, name: str) -> float | None:
+    if value is None or not value.strip():
+        return None
+    return _as_non_negative_float(value, name=name)
+
+
+def _default_voice_matching_thresholds() -> MatchingThresholds:
+    """Без калибровки сопоставление всегда остаётся в fail-closed состоянии."""
+
+    return MatchingThresholds(
+        candidate_max_distance=None,
+        auto_max_distance=None,
+        min_margin=None,
+        min_intervals=1,
+        min_coverage=0.0,
+    )
+
+
 def _default_app_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -51,6 +81,9 @@ class Settings:
     models_dir: Path | None = None
     asr_manifest_path: Path | None = None
     ffmpeg_path: Path | None = None
+    voice_matching_thresholds: MatchingThresholds = field(
+        default_factory=_default_voice_matching_thresholds
+    )
     cookie_name: str = "local_voice_transcriber_session"
     csrf_cookie_name: str = "local_voice_transcriber_csrf"
     csrf_header_name: str = "X-CSRF-Token"
@@ -140,6 +173,54 @@ class Settings:
         instance_id = values.get("NEXT_INSTANCE_ID", "transcription-next-candidate").strip()
         if not instance_id:
             raise ConfigurationError("NEXT_INSTANCE_ID не может быть пустым")
+        try:
+            voice_matching_thresholds = MatchingThresholds(
+                candidate_max_distance=_optional_non_negative_float(
+                    values.get("NEXT_VOICE_CANDIDATE_MAX_DISTANCE"),
+                    name="NEXT_VOICE_CANDIDATE_MAX_DISTANCE",
+                ),
+                auto_max_distance=_optional_non_negative_float(
+                    values.get("NEXT_VOICE_AUTO_MAX_DISTANCE"),
+                    name="NEXT_VOICE_AUTO_MAX_DISTANCE",
+                ),
+                min_margin=_optional_non_negative_float(
+                    values.get("NEXT_VOICE_MIN_MARGIN"),
+                    name="NEXT_VOICE_MIN_MARGIN",
+                ),
+                min_intervals=_as_positive_int(
+                    values.get("NEXT_VOICE_MIN_INTERVALS", "1"),
+                    name="NEXT_VOICE_MIN_INTERVALS",
+                ),
+                min_coverage=_as_non_negative_float(
+                    values.get("NEXT_VOICE_MIN_COVERAGE", "0"),
+                    name="NEXT_VOICE_MIN_COVERAGE",
+                ),
+                quality_policy=QualityPolicy(
+                    min_duration_ms=_as_positive_int(
+                        values.get("NEXT_VOICE_MIN_DURATION_MS", "1000"),
+                        name="NEXT_VOICE_MIN_DURATION_MS",
+                        minimum=0,
+                    ),
+                    min_quality_score=_as_non_negative_float(
+                        values.get("NEXT_VOICE_MIN_QUALITY", "0.01"),
+                        name="NEXT_VOICE_MIN_QUALITY",
+                    ),
+                    min_speech_ratio=_as_non_negative_float(
+                        values.get("NEXT_VOICE_MIN_SPEECH_RATIO", "0"),
+                        name="NEXT_VOICE_MIN_SPEECH_RATIO",
+                    ),
+                ),
+                calibrated=_as_bool(
+                    values.get("NEXT_VOICE_CALIBRATED", "false"),
+                    name="NEXT_VOICE_CALIBRATED",
+                ),
+                auto_assign_enabled=_as_bool(
+                    values.get("NEXT_VOICE_AUTO_ASSIGN_ENABLED", "false"),
+                    name="NEXT_VOICE_AUTO_ASSIGN_ENABLED",
+                ),
+            )
+        except ValueError as error:
+            raise ConfigurationError(f"Некорректны параметры voice matching: {error}") from error
         return cls(
             data_dir=data_dir,
             database_path=database_path,
@@ -159,4 +240,5 @@ class Settings:
             models_dir=models_dir,
             asr_manifest_path=asr_manifest_path,
             ffmpeg_path=ffmpeg_path,
+            voice_matching_thresholds=voice_matching_thresholds,
         )

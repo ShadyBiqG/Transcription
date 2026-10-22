@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import sqlite3
 import time
+import wave
 from collections import defaultdict, deque
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from hashlib import sha256
 from os import getpid
 from pathlib import Path
 from typing import Annotated, Literal
@@ -34,7 +36,9 @@ from .auth import (
 from .config import Settings
 from .database import Database
 from .diarization import (
+    DiarizationInterval,
     DiarizationPackVerificationError,
+    LocalDiarizationPack,
     SherpaDiarizationAdapter,
 )
 from .editor import AsrBaselinePublisher, EditorRepository
@@ -47,10 +51,24 @@ from .routes.editor import router as editor_router
 from .routes.jobs import router as jobs_router
 from .routes.vocabulary import router as vocabulary_router
 from .routes.voice_profiles import router as voice_profiles_router
+from .routes.voice_samples import router as voice_samples_router
 from .runtime import ModelPackManifestError, load_asr_model_packs
 from .vector_store import ZeusDBVoiceVectorStore
 from .vocabulary import VocabularyRepository, VocabularyService
+from .voice.automatic_matching import (
+    AutomaticSpeakerGroupMatch,
+    AutomaticVoiceMatchingConfig,
+    AutomaticVoiceMatchingService,
+)
+from .voice.embedding import (
+    SherpaVoiceEmbeddingAdapter,
+    VoiceEmbeddingPackVerificationError,
+    VoiceEmbeddingRuntimeError,
+)
+from .voice.index_writer import VoiceIndexWriter, VoiceIndexWriterError
+from .voice.models import MatchingThresholds
 from .voice.repository import VoiceDirectoryRepository
+from .voice.sample_artifact import VoiceSampleArtifactWriter
 from .voice.service import VoiceDirectoryService
 
 
@@ -161,10 +179,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.editor_repository.migrate()
         app.state.voice_directory_repository.migrate()
         app.state.vocabulary_repository.migrate()
-        dispatcher, asr_pack_id, asr_reason, voice_pack_id, voice_reason = _configure_asr_worker(
+        (
+            dispatcher,
+            asr_pack_id,
+            asr_reason,
+            voice_pack_id,
+            voice_reason,
+            embedding_adapter,
+            diarization_pack,
+        ) = _configure_asr_worker(
             application_settings,
             app.state.jobs_repository,
             app.state.editor_repository,
+            app.state.voice_directory_repository,
+            app.state.vector_store,
         )
         app.state.asr_ready = dispatcher is not None
         app.state.asr_pack_id = asr_pack_id
@@ -173,6 +201,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.voice_pack_id = voice_pack_id
         app.state.voice_diarization_ready = voice_pack_id is not None
         app.state.voice_diarization_reason = voice_reason
+        app.state.voice_embedding_adapter = embedding_adapter
+        jobs_root = application_settings.data_dir / "jobs"
+        samples_root = application_settings.data_dir / "protected" / "voice-samples"
+        jobs_root.mkdir(parents=True, exist_ok=True)
+        samples_root.mkdir(parents=True, exist_ok=True)
+        app.state.voice_sample_artifact_writer = VoiceSampleArtifactWriter(
+            jobs_root=jobs_root,
+            samples_root=samples_root,
+        )
+        app.state.voice_index_writer = None
+        app.state.voice_index_reason = "Локальный voice pack не настроен"
+        if (
+            voice_pack_id is not None
+            and embedding_adapter is not None
+            and diarization_pack is not None
+        ):
+            if diarization_pack.embedding_dimension is None:
+                app.state.voice_index_reason = (
+                    "В манифесте voice pack не указана размерность embedding_dimension"
+                )
+            else:
+                app.state.voice_index_writer = VoiceIndexWriter(
+                    app.state.voice_directory_repository,
+                    app.state.vector_store,
+                    voice_pack_id=voice_pack_id,
+                    voice_pack_sha256=_voice_pack_digest(diarization_pack),
+                    embedding_dimension=diarization_pack.embedding_dimension,
+                    protected_root=samples_root,
+                    extractor=lambda path: _extract_full_sample_embedding(embedding_adapter, path),
+                )
+                try:
+                    app.state.voice_index_writer.reconcile()
+                    app.state.voice_index_reason = None
+                except VoiceIndexWriterError:
+                    app.state.voice_index_reason = (
+                        "Общий голосовой индекс пока недоступен; повтор будет выполнен "
+                        "при следующем явном добавлении образца или перезапуске."
+                    )
         if dispatcher is not None:
             dispatcher.start()
         try:
@@ -199,6 +265,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.voice_pack_id = None
     app.state.voice_diarization_ready = False
     app.state.voice_diarization_reason = "Локальный voice pack не настроен"
+    app.state.voice_embedding_adapter = None
+    app.state.voice_sample_artifact_writer = None
+    app.state.voice_index_writer = None
+    app.state.voice_index_reason = "Локальный voice pack не настроен"
 
     @app.exception_handler(ApiError)
     async def api_error_handler(_: Request, error: ApiError) -> JSONResponse:
@@ -405,12 +475,54 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "pack_id": app.state.voice_pack_id,
                 "reason": app.state.voice_diarization_reason,
             },
+            "voice_index": {
+                "ready": app.state.voice_index_writer is not None
+                and app.state.voice_index_reason is None,
+                "reason": app.state.voice_index_reason,
+            },
             "actor_id": admin.user_id,
+        }
+
+    @app.post("/api/v1/admin/voice-index/reconcile", tags=["admin"])
+    def reconcile_voice_index(admin: CsrfSessionDependency) -> dict[str, object]:
+        """Повторяет durable outbox без доступа к приватным транскрипциям."""
+
+        if admin.role != "admin":
+            raise ApiError(403, "admin_required", "Требуется роль администратора")
+        writer = app.state.voice_index_writer
+        if writer is None:
+            raise ApiError(
+                503,
+                "voice_index_unavailable",
+                "Общий голосовой индекс не готов: проверьте voice pack и ZeusDB",
+            )
+        try:
+            result = writer.reconcile()
+        except VoiceIndexWriterError as error:
+            app.state.voice_index_reason = (
+                "Общий голосовой индекс не выполнил повторную обработку outbox."
+            )
+            raise ApiError(
+                503,
+                "voice_index_unavailable",
+                "Общий голосовой индекс временно недоступен",
+            ) from error
+        app.state.voice_index_reason = None
+        database.add_audit_event(
+            actor_id=admin.user_id,
+            action="voice_index_reconciliation_requested",
+            target_type="voice_index",
+            target_id=app.state.voice_pack_id or "not_configured",
+        )
+        return {
+            "generation_id": result.generation.id if result.generation is not None else None,
+            "processed_operation_count": len(result.operation_ids),
         }
 
     app.include_router(jobs_router)
     app.include_router(editor_router)
     app.include_router(voice_profiles_router)
+    app.include_router(voice_samples_router)
     app.include_router(vocabulary_router)
 
     return app
@@ -420,15 +532,25 @@ def _configure_asr_worker(
     settings: Settings,
     repository: JobRepository,
     editor_repository: EditorRepository,
-) -> tuple[OneWorkerDispatcher | None, str, str | None, str | None, str | None]:
+    voice_directory_repository: VoiceDirectoryRepository,
+    vector_store: ZeusDBVoiceVectorStore,
+) -> tuple[
+    OneWorkerDispatcher | None,
+    str,
+    str | None,
+    str | None,
+    str | None,
+    SherpaVoiceEmbeddingAdapter | None,
+    LocalDiarizationPack | None,
+]:
     """Собирает worker только из проверенных локальных ресурсов."""
 
     if settings.models_dir is None or settings.asr_manifest_path is None:
-        return None, "", "Не задан манифест локального ASR/VAD model pack", None, None
+        return None, "", "Не задан манифест локального ASR/VAD model pack", None, None, None, None
     if settings.ffmpeg_path is None:
-        return None, "", "Не задан путь к локальному FFmpeg", None, None
+        return None, "", "Не задан путь к локальному FFmpeg", None, None, None, None
     if not settings.ffmpeg_path.is_file():
-        return None, "", "Локальный FFmpeg недоступен", None, None
+        return None, "", "Локальный FFmpeg недоступен", None, None, None, None
     try:
         packs = load_asr_model_packs(settings.asr_manifest_path, models_root=settings.models_dir)
         asr_adapter = OfflineAsrAdapter(
@@ -439,10 +561,13 @@ def _configure_asr_worker(
         )
         asr_adapter.verify_packs()
     except (ModelPackManifestError, PackVerificationError):
-        return None, "", "Локальный ASR/VAD model pack не прошёл проверку", None, None
+        return None, "", "Локальный ASR/VAD model pack не прошёл проверку", None, None, None, None
     diarizer = None
+    embedding_adapter = None
     voice_pack_id: str | None = None
     voice_reason: str | None = "Локальный voice pack не настроен"
+    diarization_pack: LocalDiarizationPack | None = None
+    voice_matcher: _RuntimeVoiceMatcher | None = None
     if packs.diarization is not None:
         try:
             diarizer = SherpaDiarizationAdapter(
@@ -451,9 +576,28 @@ def _configure_asr_worker(
                 audio_root=settings.data_dir / "jobs",
             )
             diarizer.verify_pack()
+            embedding_adapter = SherpaVoiceEmbeddingAdapter(
+                packs.diarization,
+                models_root=settings.models_dir,
+                audio_root=settings.data_dir,
+            )
+            embedding_adapter.verify_pack()
             voice_pack_id = packs.diarization.pack_id
+            diarization_pack = packs.diarization
+            if packs.diarization.embedding_dimension is not None:
+                voice_matcher = _RuntimeVoiceMatcher(
+                    repository=voice_directory_repository,
+                    vector_index=vector_store,
+                    embedding_adapter=embedding_adapter,
+                    voice_pack_id=voice_pack_id,
+                    thresholds=settings.voice_matching_thresholds,
+                )
             voice_reason = None
-        except DiarizationPackVerificationError:
+        except (DiarizationPackVerificationError, VoiceEmbeddingPackVerificationError):
+            diarizer = None
+            embedding_adapter = None
+            diarization_pack = None
+            voice_matcher = None
             voice_reason = "Локальный voice pack не прошёл проверку"
     normalizer = FfmpegNormalizer(settings.ffmpeg_path, jobs_root=settings.data_dir / "jobs")
     processor = AsrJobProcessor(
@@ -463,13 +607,107 @@ def _configure_asr_worker(
         jobs_root=settings.data_dir / "jobs",
         publisher=AsrBaselinePublisher(repository, editor_repository),
         diarizer=diarizer,
+        voice_matcher=voice_matcher,
     )
     dispatcher = OneWorkerDispatcher(
         repository,
         processor,
         worker_id=f"{settings.instance_id}-{getpid()}",
     )
-    return dispatcher, packs.asr.pack_id, None, voice_pack_id, voice_reason
+    return (
+        dispatcher,
+        packs.asr.pack_id,
+        None,
+        voice_pack_id,
+        voice_reason,
+        embedding_adapter,
+        diarization_pack,
+    )
+
+
+def _voice_pack_digest(pack: LocalDiarizationPack) -> str:
+    """Строит стабильный fingerprint только из уже проверенного model pack."""
+
+    digest = sha256()
+    digest.update(pack.pack_id.encode("utf-8"))
+    digest.update(b"\n")
+    digest.update(pack.segmentation_model.encode("utf-8"))
+    digest.update(b"\n")
+    digest.update(pack.embedding_model.encode("utf-8"))
+    digest.update(b"\n")
+    digest.update(str(pack.embedding_dimension or "").encode("ascii"))
+    digest.update(b"\n")
+    for relative_path, expected_sha256 in sorted(pack.files.items()):
+        digest.update(relative_path.encode("utf-8"))
+        digest.update(b"=")
+        digest.update(expected_sha256.encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+@dataclass(slots=True)
+class _RuntimeVoiceMatcher:
+    """Создаёт matching-снимок с текущими active профилями на каждый job run."""
+
+    repository: VoiceDirectoryRepository
+    vector_index: ZeusDBVoiceVectorStore
+    embedding_adapter: SherpaVoiceEmbeddingAdapter
+    voice_pack_id: str
+    thresholds: MatchingThresholds
+
+    def match_groups(
+        self,
+        *,
+        normalized_wav_path: Path,
+        intervals: tuple[DiarizationInterval, ...],
+    ) -> tuple[AutomaticSpeakerGroupMatch, ...]:
+        """Не даёт сбою справочника прервать публикацию личного транскрипта."""
+
+        auto_assign_profile_ids = frozenset()
+        try:
+            if self.thresholds.calibrated and self.thresholds.auto_assign_enabled:
+                auto_assign_profile_ids = frozenset(
+                    profile.id for profile in self.repository.list_shared_profiles()
+                )
+        except Exception:
+            # Основной сервис превратит недоступность directory в UNKNOWN.
+            pass
+        service = AutomaticVoiceMatchingService(
+            repository=self.repository,
+            vector_index=self.vector_index,
+            extractor=lambda path, start_ms, end_ms: self.embedding_adapter.extract(
+                path,
+                start_ms=start_ms,
+                end_ms=end_ms,
+            ),
+            config=AutomaticVoiceMatchingConfig(
+                voice_pack_id=self.voice_pack_id,
+                thresholds=self.thresholds,
+                auto_assign_profile_ids=auto_assign_profile_ids,
+            ),
+        )
+        return service.match_groups(
+            normalized_wav_path=normalized_wav_path,
+            intervals=intervals,
+        )
+
+
+def _extract_full_sample_embedding(
+    adapter: SherpaVoiceEmbeddingAdapter,
+    sample_path: Path,
+) -> tuple[float, ...]:
+    """Извлекает embedding целого protected WAV внутри допустимой границы."""
+
+    try:
+        with wave.open(str(sample_path), "rb") as reader:
+            frame_count = reader.getnframes()
+            sample_rate = reader.getframerate()
+    except (OSError, wave.Error) as error:
+        raise VoiceEmbeddingRuntimeError("Не удалось прочитать protected WAV образца.") from error
+    if frame_count < 1 or sample_rate < 1:
+        raise VoiceEmbeddingRuntimeError("Protected WAV образца не содержит аудиофреймов.")
+    end_ms = max(1, frame_count * 1000 // sample_rate)
+    return adapter.extract(sample_path, start_ms=0, end_ms=end_ms)
 
 
 app = create_app()

@@ -56,3 +56,33 @@ def test_port_must_be_positive_integer(tmp_path: Path, value: str) -> None:
 def test_boolean_values_are_validated(tmp_path: Path) -> None:
     with pytest.raises(ConfigurationError, match="NEXT_COOKIE_SECURE"):
         Settings.from_env({"NEXT_COOKIE_SECURE": "perhaps"}, app_root=tmp_path)
+
+
+def test_voice_auto_assignment_requires_explicit_calibrated_thresholds(tmp_path: Path) -> None:
+    settings = Settings.from_env(
+        {
+            "NEXT_VOICE_CANDIDATE_MAX_DISTANCE": "0.35",
+            "NEXT_VOICE_AUTO_MAX_DISTANCE": "0.20",
+            "NEXT_VOICE_MIN_MARGIN": "0.04",
+            "NEXT_VOICE_MIN_INTERVALS": "2",
+            "NEXT_VOICE_MIN_COVERAGE": "0.7",
+            "NEXT_VOICE_CALIBRATED": "true",
+            "NEXT_VOICE_AUTO_ASSIGN_ENABLED": "true",
+        },
+        app_root=tmp_path,
+    )
+
+    assert settings.voice_matching_thresholds.calibrated is True
+    assert settings.voice_matching_thresholds.auto_assign_enabled is True
+    assert settings.voice_matching_thresholds.auto_max_distance == 0.2
+
+
+def test_voice_auto_threshold_cannot_be_weaker_than_candidate(tmp_path: Path) -> None:
+    with pytest.raises(ConfigurationError, match="voice matching"):
+        Settings.from_env(
+            {
+                "NEXT_VOICE_CANDIDATE_MAX_DISTANCE": "0.2",
+                "NEXT_VOICE_AUTO_MAX_DISTANCE": "0.3",
+            },
+            app_root=tmp_path,
+        )

@@ -88,6 +88,7 @@ def test_verified_voice_pack_enables_group_diarization_without_network(
             '"directory":"voice",'
             '"segmentation_model":"segmentation.onnx",'
             '"embedding_model":"embedding.onnx",'
+            '"embedding_dimension":192,'
             f'"files":{{"segmentation.onnx":"{sha256(segmentation.read_bytes()).hexdigest()}",'
             f'"embedding.onnx":"{sha256(embedding.read_bytes()).hexdigest()}"}}'
             "}"
@@ -117,3 +118,5 @@ def test_verified_voice_pack_enables_group_diarization_without_network(
         assert client.app.state.voice_diarization_ready is True
         assert client.app.state.voice_pack_id == "sherpa-local"
         assert client.app.state.voice_diarization_reason is None
+        assert client.app.state.voice_index_writer is not None
+        assert client.app.state.voice_index_reason is None

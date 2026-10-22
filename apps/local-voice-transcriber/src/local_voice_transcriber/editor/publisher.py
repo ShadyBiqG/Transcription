@@ -5,6 +5,7 @@ from __future__ import annotations
 from ..diarization import AsrSegmentReference, DiarizationInterval, DiarizationMapper
 from ..jobs.models import Job, JobRun
 from ..jobs.repository import JobRepository
+from ..voice.automatic_matching import AutomaticSpeakerGroupMatch
 from .models import GroupSnapshot, SourceSegmentSnapshot, TranscriptRevision
 from .repository import EditorRepository
 
@@ -22,6 +23,7 @@ class AsrBaselinePublisher:
         run: JobRun,
         *,
         diarization_intervals: tuple[DiarizationInterval, ...] = (),
+        voice_matches: tuple[AutomaticSpeakerGroupMatch, ...] = (),
     ) -> TranscriptRevision:
         """Публикует baseline из ASR и локальных групп без назначения профиля."""
 
@@ -59,12 +61,24 @@ class AsrBaselinePublisher:
         group_order = tuple(
             dict.fromkeys(interval.speaker_group_id for interval in diarization_intervals)
         )
+        matches_by_group = {item.speaker_group_id: item for item in voice_matches}
         groups = tuple(
             GroupSnapshot(
                 speaker_group_id=group_id,
                 label_snapshot=f"Говорящий {index}",
-                assignment_status="unknown",
-                provenance="diarization",
+                profile_id=(
+                    matches_by_group[group_id].profile_id if group_id in matches_by_group else None
+                ),
+                assignment_status=(
+                    matches_by_group[group_id].decision.status.value
+                    if group_id in matches_by_group
+                    else "unknown"
+                ),
+                provenance=(
+                    matches_by_group[group_id].provenance.value
+                    if group_id in matches_by_group
+                    else "diarization"
+                ),
             )
             for index, group_id in enumerate(group_order, start=1)
         )

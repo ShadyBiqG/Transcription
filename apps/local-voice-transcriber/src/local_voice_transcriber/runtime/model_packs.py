@@ -138,6 +138,7 @@ def _parse_diarization_pack(
         "embedding_model",
         context=f"раздел {field}",
     )
+    embedding_dimension = _optional_positive_int(raw_pack, "embedding_dimension")
     files = _parse_files(raw_pack, pack_field=field, directory=directory, models_root=models_root)
     return LocalDiarizationPack(
         pack_id=pack_id,
@@ -145,6 +146,7 @@ def _parse_diarization_pack(
         segmentation_model=segmentation_model,
         embedding_model=embedding_model,
         files=MappingProxyType(files),
+        embedding_dimension=embedding_dimension,
     )
 
 
@@ -188,6 +190,15 @@ def _required_text(source: Mapping[str, Any], field: str, *, context: str) -> st
     if not isinstance(value, str) or not value.strip():
         raise ModelPackManifestError(f"Поле {field} в {context} должно быть непустой строкой")
     return value.strip()
+
+
+def _optional_positive_int(source: Mapping[str, Any], field: str) -> int | None:
+    value = source.get(field)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ModelPackManifestError(f"Поле {field} должно быть положительным целым числом")
+    return value
 
 
 def _resolve_relative_path(

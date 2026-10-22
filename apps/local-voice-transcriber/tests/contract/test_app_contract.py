@@ -75,6 +75,25 @@ def test_admin_endpoint_rejects_regular_user(logged_in_client: TestClient) -> No
     assert response.json()["code"] == "admin_required"
 
 
+def test_voice_index_retry_is_available_only_to_administrator(client: TestClient) -> None:
+    registered = client.post(
+        "/api/v1/auth/register",
+        json={"login": "local-admin", "password": "correct horse battery"},
+    )
+    user_id = registered.json()["user"]["id"]
+    client.app.state.database.update_user(user_id=user_id, role="admin")
+    csrf_token = login(client, "local-admin")
+
+    response = client.post(
+        "/api/v1/admin/voice-index/reconcile",
+        headers={"X-CSRF-Token": csrf_token},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "voice_index_unavailable"
+    assert "path" not in response.text.casefold()
+
+
 def test_static_index_is_public_without_api_secrets(client: TestClient) -> None:
     response = client.get("/")
 

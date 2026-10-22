@@ -17,3 +17,10 @@ BootstrapAdminLogin и BootstrapAdminPassword (SecureString).
 отдельную service account без ACL на legacy data. `NEXT_COOKIE_SECURE=true`
 предполагает HTTPS перед reverse proxy; прямой HTTP-доступ к 8010 предназначен
 только для локальной диагностики.
+
+Для одного `DataPath` поддерживается только один процесс candidate-приложения.
+Не запускайте второй launcher и не добавляйте Uvicorn workers: durable writer
+общего ZeusDB-индекса рассчитан на единственный сервисный процесс. Администратор
+может повторить незавершённую обработку outbox через
+`POST /api/v1/admin/voice-index/reconcile`; запрос не раскрывает чужие тексты,
+аудио или эмбеддинги.

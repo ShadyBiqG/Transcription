@@ -40,6 +40,7 @@ class LocalDiarizationPack:
     segmentation_model: str
     embedding_model: str
     files: Mapping[str, str]
+    embedding_dimension: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

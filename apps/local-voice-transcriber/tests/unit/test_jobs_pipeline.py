@@ -10,6 +10,12 @@ from local_voice_transcriber.diarization import DiarizationInterval
 from local_voice_transcriber.jobs.media import FfmpegNormalizer, MediaNormalizationError
 from local_voice_transcriber.jobs.pipeline import AsrJobProcessor, JobCancelled
 from local_voice_transcriber.jobs.repository import JobRepository
+from local_voice_transcriber.voice.automatic_matching import AutomaticSpeakerGroupMatch
+from local_voice_transcriber.voice.models import (
+    DecisionProvenance,
+    VoiceMatchDecision,
+    VoiceMatchStatus,
+)
 
 
 class FakeNormalizer:
@@ -43,7 +49,14 @@ class FakePublisher:
         self._repository = repository
         self.calls: list[tuple[str, str]] = []
 
-    def publish(self, job, run, *, diarization_intervals=()) -> None:  # type: ignore[no-untyped-def]
+    def publish(  # type: ignore[no-untyped-def]
+        self,
+        job,
+        run,
+        *,
+        diarization_intervals=(),
+        voice_matches=(),
+    ) -> None:
         assert self._repository.source_segments(run.id)
         self.calls.append((job.id, run.id))
 
@@ -69,10 +82,60 @@ class CapturingPublisher(FakePublisher):
     def __init__(self, repository: JobRepository) -> None:
         super().__init__(repository)
         self.intervals: tuple[DiarizationInterval, ...] = ()
+        self.voice_matches: tuple[AutomaticSpeakerGroupMatch, ...] = ()
 
-    def publish(self, job, run, *, diarization_intervals=()) -> None:  # type: ignore[no-untyped-def]
+    def publish(  # type: ignore[no-untyped-def]
+        self,
+        job,
+        run,
+        *,
+        diarization_intervals=(),
+        voice_matches=(),
+    ) -> None:
         self.intervals = tuple(diarization_intervals)
-        super().publish(job, run, diarization_intervals=diarization_intervals)
+        self.voice_matches = tuple(voice_matches)
+        super().publish(
+            job,
+            run,
+            diarization_intervals=diarization_intervals,
+            voice_matches=voice_matches,
+        )
+
+
+class FakeVoiceMatcher:
+    def __init__(self) -> None:
+        self.paths: list[Path] = []
+
+    def match_groups(
+        self,
+        *,
+        normalized_wav_path: Path,
+        intervals: tuple[DiarizationInterval, ...],
+    ) -> tuple[AutomaticSpeakerGroupMatch, ...]:
+        self.paths.append(normalized_wav_path)
+        assert intervals
+        decision = VoiceMatchDecision(
+            status=VoiceMatchStatus.AUTO_ASSIGNED,
+            provenance=DecisionProvenance.AUTOMATIC,
+            selected_profile_id="profile-alex",
+            candidates=(),
+            best_distance=0.1,
+            second_distance=None,
+            margin=None,
+            evidence_count=1,
+            coverage=1.0,
+            has_overlap=False,
+            reason="Тестовое калиброванное совпадение.",
+        )
+        return (
+            AutomaticSpeakerGroupMatch(
+                speaker_group_id=intervals[0].speaker_group_id,
+                decision=decision,
+                profile_id="profile-alex",
+                confidence=None,
+                provenance=DecisionProvenance.AUTOMATIC,
+            ),
+        )
 
 
 def test_pipeline_persists_immutable_asr_source_after_normalization(tmp_path: Path) -> None:
@@ -131,6 +194,26 @@ def test_pipeline_passes_local_diarization_groups_to_publisher(tmp_path: Path) -
 
     assert diarizer.paths == [jobs_root / job.id / "runs" / run.id / "normalized.wav"]
     assert [item.speaker_group_id for item in publisher.intervals] == ["local-speaker:0"]
+
+
+def test_pipeline_passes_safe_voice_match_to_publisher_after_diarization(tmp_path: Path) -> None:
+    repository, jobs_root, job, run = claimed_run(tmp_path)
+    publisher = CapturingPublisher(repository)
+    matcher = FakeVoiceMatcher()
+    processor = AsrJobProcessor(
+        repository,
+        FakeNormalizer(),
+        FakeAsr(),
+        jobs_root=jobs_root,
+        publisher=publisher,
+        diarizer=FakeDiarizer(),
+        voice_matcher=matcher,
+    )
+
+    asyncio.run(processor.process(job, run, lambda: False))
+
+    assert matcher.paths == [jobs_root / job.id / "runs" / run.id / "normalized.wav"]
+    assert publisher.voice_matches[0].profile_id == "profile-alex"
 
 
 def test_ffmpeg_normalizer_rejects_media_outside_candidate_jobs_root(tmp_path: Path) -> None:

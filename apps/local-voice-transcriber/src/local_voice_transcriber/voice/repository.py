@@ -157,6 +157,24 @@ class IndexSample:
 
 
 @dataclass(frozen=True, slots=True)
+class IndexSampleInput:
+    """Приватный вход index writer-а с путём к уже подтверждённому образцу.
+
+    Эта проекция не используется HTTP-маршрутами и не содержит vector bytes.
+    Она существует только внутри локального worker-а, которому необходимо
+    передать защищённый WAV в extractor перед записью результата в ZeusDB.
+    """
+
+    sample_id: str
+    profile_id: str
+    voice_pack_id: str
+    deterministic_record_id: str
+    protected_artifact_id: str
+    protected_path: str
+    state: SampleState
+
+
+@dataclass(frozen=True, slots=True)
 class _ProfileTransition:
     profile: SharedVoiceProfile
     samples: tuple[IndexSample, ...]
@@ -598,6 +616,38 @@ class VoiceDirectoryRepository:
                 (voice_pack_id, *(state.value for state in states)),
             ).fetchall()
         return [_to_index_sample(row) for row in rows]
+
+    def list_index_inputs(
+        self,
+        *,
+        voice_pack_id: str,
+        states: Sequence[SampleState] = (SampleState.PENDING, SampleState.ACTIVE),
+    ) -> list[IndexSampleInput]:
+        """Возвращает private inputs только для локального index writer-а.
+
+        Путь защищённого WAV никогда не включается в shared-проекцию профиля,
+        API-ответ или outbox JSON. При пересборке необходим полный snapshot
+        активных и новых образцов, поэтому по умолчанию включены оба состояния.
+        """
+
+        if not states:
+            return []
+        placeholders = ", ".join("?" for _ in states)
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT samples.id, samples.profile_id, samples.voice_pack_id,
+                       samples.index_record_id, samples.protected_artifact_id,
+                       artifacts.protected_path, samples.state
+                FROM next_voice_samples AS samples
+                JOIN next_protected_sample_artifacts AS artifacts
+                  ON artifacts.id = samples.protected_artifact_id
+                WHERE samples.voice_pack_id = ? AND samples.state IN ({placeholders})
+                ORDER BY samples.created_at, samples.id
+                """,
+                (voice_pack_id, *(state.value for state in states)),
+            ).fetchall()
+        return [_to_index_sample_input(row) for row in rows]
 
     def list_reconcilable_operations(self, *, voice_pack_id: str) -> list[VoiceIndexOperation]:
         """Возвращает незавершённый outbox в хронологическом порядке для одного writer-а."""
@@ -1283,6 +1333,18 @@ def _to_index_sample(row: sqlite3.Row) -> IndexSample:
         deterministic_record_id=str(row["index_record_id"]),
         protected_artifact_id=str(row["protected_artifact_id"]),
         quality_json=str(row["quality_json"]),
+        state=SampleState(row["state"]),
+    )
+
+
+def _to_index_sample_input(row: sqlite3.Row) -> IndexSampleInput:
+    return IndexSampleInput(
+        sample_id=str(row["id"]),
+        profile_id=str(row["profile_id"]),
+        voice_pack_id=str(row["voice_pack_id"]),
+        deterministic_record_id=str(row["index_record_id"]),
+        protected_artifact_id=str(row["protected_artifact_id"]),
+        protected_path=str(row["protected_path"]),
         state=SampleState(row["state"]),
     )
 

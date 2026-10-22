@@ -9,6 +9,7 @@ from typing import Protocol
 
 from ..asr.models import AsrRecognition
 from ..diarization import DiarizationInterval
+from ..voice.automatic_matching import AutomaticSpeakerGroupMatch
 from .media import FfmpegNormalizer
 from .models import Job, JobRun, JobStage
 from .repository import JobRepository
@@ -27,6 +28,7 @@ class SourcePublisher(Protocol):
         run: JobRun,
         *,
         diarization_intervals: tuple[DiarizationInterval, ...] = (),
+        voice_matches: tuple[AutomaticSpeakerGroupMatch, ...] = (),
     ) -> object: ...
 
 
@@ -34,6 +36,17 @@ class DiarizationAdapter(Protocol):
     """Строго локальный шаг, строящий группы для текущего job run."""
 
     def diarize(self, wav_path: Path) -> tuple[DiarizationInterval, ...]: ...
+
+
+class VoiceMatcher(Protocol):
+    """Сопоставляет локальные speaker-группы с shared voice directory."""
+
+    def match_groups(
+        self,
+        *,
+        normalized_wav_path: Path,
+        intervals: tuple[DiarizationInterval, ...],
+    ) -> tuple[AutomaticSpeakerGroupMatch, ...]: ...
 
 
 class JobCancelled(RuntimeError):
@@ -52,6 +65,7 @@ class AsrJobProcessor:
         jobs_root: Path,
         publisher: SourcePublisher | None = None,
         diarizer: DiarizationAdapter | None = None,
+        voice_matcher: VoiceMatcher | None = None,
     ) -> None:
         self._repository = repository
         self._normalizer = normalizer
@@ -59,6 +73,7 @@ class AsrJobProcessor:
         self._jobs_root = jobs_root
         self._publisher = publisher
         self._diarizer = diarizer
+        self._voice_matcher = voice_matcher
 
     async def process(
         self, job: Job, run: JobRun, cancellation_requested: Callable[[], bool]
@@ -93,6 +108,14 @@ class AsrJobProcessor:
             )
             diarization_intervals = await asyncio.to_thread(self._diarizer.diarize, normalized)
             self._raise_if_cancelled(cancellation_requested)
+        voice_matches: tuple[AutomaticSpeakerGroupMatch, ...] = ()
+        if self._voice_matcher is not None and diarization_intervals:
+            voice_matches = await asyncio.to_thread(
+                self._voice_matcher.match_groups,
+                normalized_wav_path=normalized,
+                intervals=diarization_intervals,
+            )
+            self._raise_if_cancelled(cancellation_requested)
         if self._publisher is not None:
             self._repository.stage_manifest(
                 run_id=run.id,
@@ -100,12 +123,12 @@ class AsrJobProcessor:
                 stage=JobStage.PUBLISHING,
                 manifest={"editor_baseline": "pending"},
             )
-            await asyncio.to_thread(
-                self._publisher.publish,
-                job,
-                run,
-                diarization_intervals=diarization_intervals,
-            )
+            publish_kwargs: dict[str, object] = {
+                "diarization_intervals": diarization_intervals,
+            }
+            if voice_matches:
+                publish_kwargs["voice_matches"] = voice_matches
+            await asyncio.to_thread(self._publisher.publish, job, run, **publish_kwargs)
         self._repository.stage_manifest(
             run_id=run.id,
             worker_id=run.lease_owner or "",
@@ -114,6 +137,7 @@ class AsrJobProcessor:
                 "source_records_saved": True,
                 "segment_count": len(recognition.segments),
                 "diarization_interval_count": len(diarization_intervals),
+                "voice_match_group_count": len(voice_matches),
                 "editor_baseline": self._publisher is not None,
             },
         )

@@ -198,11 +198,26 @@
       list.append(text("p", "Группы станут доступны после публикации транскрипции."));
       return;
     }
+    const assignmentLabels = {
+      unknown: "не определён",
+      ambiguous: "несколько вариантов",
+      candidate: "требуется проверка",
+      auto_assigned: "распознано автоматически",
+      confirmed: "подтверждено вручную",
+      rejected: "отклонено",
+    };
     editor.revision.groups.forEach((group) => {
       const row = document.createElement("article");
       row.className = "group-editor";
       row.dataset.groupId = group.speaker_group_id;
-      row.append(text("small", group.merged_into_group_id ? "Объединена с " + group.merged_into_group_id : "Локальная группа"));
+      row.append(
+        text(
+          "small",
+          group.merged_into_group_id
+            ? "Объединена с " + group.merged_into_group_id
+            : "Локальная группа · " + (assignmentLabels[group.assignment_status] || "не определён"),
+        ),
+      );
       const name = document.createElement("input");
       name.className = "group-label-input";
       name.value = group.label;
@@ -211,7 +226,36 @@
       const profile = document.createElement("select");
       profile.className = "group-profile-select";
       profileOptions(profile, group.profile_id);
-      row.append(name, profile);
+      const enroll = text("button", "Добавить образец голоса");
+      enroll.type = "button";
+      enroll.disabled = Boolean(group.merged_into_group_id);
+      enroll.addEventListener("click", async () => {
+        const profileId = profile.value;
+        if (!profileId) {
+          notify("Сначала выберите общий голосовой профиль для этой группы.", true);
+          return;
+        }
+        try {
+          const result = await request(
+            "/jobs/" + encodeURIComponent(editor.jobId) + "/transcript/groups/" +
+              encodeURIComponent(group.speaker_group_id) + "/samples",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ profile_id: profileId }),
+            },
+          );
+          await loadProfiles();
+          notify(
+            result.indexing_state === "active"
+              ? "Образец добавлен в общий голосовой индекс."
+              : "Образец сохранён; общий голосовой индекс повторит обработку автоматически.",
+          );
+        } catch (error) {
+          notify(error.message, true);
+        }
+      });
+      row.append(name, profile, enroll);
       list.append(row);
     });
   }
@@ -399,6 +443,20 @@
   });
 
   byId("save-editor-button").addEventListener("click", saveEditor);
+
+  byId("admin-retry-index").addEventListener("click", async () => {
+    try {
+      const result = await request("/admin/voice-index/reconcile", { method: "POST" });
+      byId("admin-overview").textContent = JSON.stringify(await request("/admin/overview"), null, 2);
+      notify(
+        result.processed_operation_count
+          ? "Голосовой индекс обновлён. Обработано операций: " + result.processed_operation_count + "."
+          : "Голосовой индекс уже актуален.",
+      );
+    } catch (error) {
+      notify(error.message, true);
+    }
+  });
 
   byId("logout-button").addEventListener("click", async () => {
     try {
