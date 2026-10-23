@@ -115,7 +115,10 @@
     byId("save-editor-button").disabled = true;
     byId("download-text-button").hidden = true;
     byId("editor-conflict").hidden = true;
-    byId("groups-list").replaceChildren();
+    byId("speaker-panel").replaceChildren();
+    byId("open-speakers-button").textContent = "Говорящие · 0";
+    byId("open-speakers-button").disabled = true;
+    byId("speakers-dialog").close();
     byId("transcript-list").replaceChildren();
   }
 
@@ -596,6 +599,99 @@
     requestAnimationFrame(() => document.querySelector(".transcript-edit")?.focus());
   }
 
+  function effectiveGroupId(editor, segment) {
+    let groupId = segment.primary_group_id || segment.speaker_group_ids?.[0] || null;
+    const visited = new Set();
+    while (groupId && !visited.has(groupId)) {
+      visited.add(groupId);
+      const group = editor.groupById.get(groupId);
+      if (!group?.merged_into_group_id) break;
+      groupId = group.merged_into_group_id;
+    }
+    return groupId;
+  }
+
+  function groupLabel(editor, groupId) {
+    return groupId ? (editor.groupById.get(groupId)?.label || "Неизвестный говорящий") : "Неизвестный говорящий";
+  }
+
+  function isGenericGroupLabel(label) {
+    return /^Говорящий\s+\d+$/u.test(String(label || "").trim());
+  }
+
+  function groupDisplayLabel(editor, groupId) {
+    const label = groupLabel(editor, groupId);
+    return isGenericGroupLabel(label) ? "Не подписан" : label;
+  }
+
+  function visibleGroups(editor) {
+    return editor.revision.groups.filter((group) => !group.merged_into_group_id);
+  }
+
+  function groupSegments(editor, groupId) {
+    return editor.revision.segments.filter((segment) => effectiveGroupId(editor, segment) === groupId);
+  }
+
+  function groupDuration(editor, groupId) {
+    return groupSegments(editor, groupId).reduce((total, segment) => {
+      const timing = editor.timingBySegment.get(segment.source_segment_id);
+      return total + Math.max(0, (timing?.end_ms || 0) - (timing?.start_ms || 0));
+    }, 0);
+  }
+
+  function sampleSegments(editor, groupId) {
+    const all = groupSegments(editor, groupId).filter((segment) => editor.timingBySegment.has(segment.source_segment_id));
+    const clean = all.filter((segment) => !segment.requires_review && (segment.speaker_group_ids?.length || 0) <= 1);
+    const pool = clean.length ? clean : all;
+    if (pool.length <= 5) return pool;
+    const positions = [0, .25, .5, .75, 1];
+    const used = new Set();
+    return positions.map((position) => {
+      let index = Math.round(position * (pool.length - 1));
+      while (used.has(index) && index < pool.length - 1) index += 1;
+      used.add(index);
+      return pool[index];
+    });
+  }
+
+  function openSpeakers(editor = state.editor, groupId = null) {
+    if (!editor?.revision) return;
+    const groups = visibleGroups(editor);
+    editor.selectedGroupId = groupId && groups.some((group) => group.speaker_group_id === groupId)
+      ? groupId
+      : (editor.selectedGroupId && groups.some((group) => group.speaker_group_id === editor.selectedGroupId)
+        ? editor.selectedGroupId : groups[0]?.speaker_group_id || null);
+    renderSpeakerPanel();
+    renderTranscript();
+    const dialog = byId("speakers-dialog");
+    if (!dialog.open) dialog.showModal();
+  }
+
+  function closeSpeakers() {
+    stopSamplePlayback();
+    byId("speakers-dialog").close();
+    const editor = state.editor;
+    if (editor) {
+      editor.selectedGroupId = null;
+      renderTranscript();
+    }
+  }
+
+  function stopSamplePlayback() {
+    const editor = state.editor;
+    if (!editor || !Number.isFinite(editor.sampleStopAt)) return;
+    editor.sampleStopAt = null;
+    const player = byId("audio-player");
+    if (!player.paused) player.pause();
+  }
+
+  function playSample(editor, segment) {
+    const timing = editor.timingBySegment.get(segment.source_segment_id);
+    if (!timing) return;
+    editor.sampleStopAt = timing.end_ms / 1000;
+    seek(timing.start_ms);
+  }
+
   function renderTranscript() {
     const list = byId("transcript-list");
     list.replaceChildren();
@@ -604,76 +700,91 @@
       list.append(text("p", editor?.unavailable || "Реплики ещё не опубликованы."));
       return;
     }
+    let turn = null;
+    const turns = [];
     editor.revision.segments.forEach((segment) => {
-      const timing = editor.timingBySegment.get(segment.source_segment_id);
+      const groupId = effectiveGroupId(editor, segment);
+      const separate = segment.requires_review || (segment.speaker_group_ids?.length || 0) > 1;
+      if (!turn || turn.groupId !== groupId || turn.separate || separate) {
+        turn = { groupId, separate, segments: [] };
+        turns.push(turn);
+      }
+      turn.segments.push(segment);
+    });
+    turns.forEach((currentTurn) => {
+      const first = currentTurn.segments[0];
+      const timing = editor.timingBySegment.get(first.source_segment_id);
       const row = document.createElement("article");
-      row.className = "transcript-row";
-      row.dataset.segmentId = segment.source_segment_id;
+      row.className = "transcript-turn";
+      row.dataset.groupId = currentTurn.groupId || "";
+      if (currentTurn.separate) row.classList.add("requires-review");
+      if (byId("speakers-dialog").open && editor.selectedGroupId === currentTurn.groupId) row.classList.add("speaker-selected");
       const seekButton = text("button", timing ? formatTime(timing.start_ms) : "—");
       seekButton.type = "button";
       seekButton.className = "timestamp";
-      seekButton.dataset.segmentId = segment.source_segment_id;
       seekButton.disabled = !timing;
-      if (timing) seekButton.addEventListener("click", () => seek(timing.start_ms));
+      if (timing) {
+        seekButton.addEventListener("click", () => {
+          stopSamplePlayback();
+          seek(timing.start_ms);
+        });
+      }
       const body = document.createElement("div");
       body.className = "transcript-body";
-      const groupIds = segment.speaker_group_ids?.length ? segment.speaker_group_ids :
-        segment.primary_group_id ? [segment.primary_group_id] : [];
-      const speaker = text("small", groupIds.length
-        ? groupIds.map((id) => editor.groupById.get(id)?.label || id).join(" · ")
-        : "Неизвестный говорящий");
+      const speaker = text("button", groupDisplayLabel(editor, currentTurn.groupId));
+      speaker.type = "button";
       speaker.className = "turn-speaker";
+      speaker.addEventListener("click", () => openSpeakers(editor, currentTurn.groupId));
       body.append(speaker);
-      if (segment.requires_review || groupIds.length > 1) {
+      if (currentTurn.separate) {
         const badge = text("span", "Одновременная речь — проверить");
         badge.className = "review-badge";
         body.append(badge);
-        row.classList.add("requires-review");
       }
-      const draft = editor.segmentDrafts.get(segment.source_segment_id) ?? segment.text;
-      if (editor.editingSegmentId === segment.source_segment_id) {
-        row.classList.add("is-editing");
-        const input = document.createElement("textarea");
-        input.className = "transcript-edit";
-        input.dataset.segmentId = segment.source_segment_id;
-        input.rows = Math.max(2, Math.ceil(draft.length / 84));
-        input.value = draft;
-        input.setAttribute("aria-label", "Текст реплики");
-        input.addEventListener("input", () => { editor.segmentDrafts.set(segment.source_segment_id, input.value); });
-        body.append(input);
-      } else {
-        const content = text("p", draft);
-        content.className = "transcript-text";
-        content.tabIndex = 0;
-        content.setAttribute("role", "button");
-        content.setAttribute("aria-label", "Изменить реплику");
-        content.addEventListener("click", () => editSegment(editor, segment.source_segment_id));
-        content.addEventListener("keydown", (event) => {
-          if (!["Enter", " "].includes(event.key)) return;
-          event.preventDefault();
-          editSegment(editor, segment.source_segment_id);
-        });
-        body.append(content);
-      }
-      const actions = document.createElement("div");
-      actions.className = "turn-actions";
-      const edit = text("button", editor.editingSegmentId === segment.source_segment_id ? "Готово" : "Править");
-      edit.type = "button";
-      edit.className = "secondary";
-      edit.addEventListener("click", () => {
+      const paragraph = document.createElement("p");
+      paragraph.className = "transcript-text";
+      currentTurn.segments.forEach((segment, index) => {
+        const draft = editor.segmentDrafts.get(segment.source_segment_id) ?? segment.text;
         if (editor.editingSegmentId === segment.source_segment_id) {
-          editor.editingSegmentId = null;
-          renderTranscript();
+          const input = document.createElement("textarea");
+          input.className = "transcript-edit";
+          input.dataset.segmentId = segment.source_segment_id;
+          input.rows = Math.max(2, Math.ceil(draft.length / 84));
+          input.value = draft;
+          input.setAttribute("aria-label", "Текст фрагмента");
+          input.addEventListener("input", () => { editor.segmentDrafts.set(segment.source_segment_id, input.value); });
+          input.addEventListener("blur", () => {
+            if (editor.editingSegmentId === segment.source_segment_id) {
+              editor.editingSegmentId = null;
+              renderTranscript();
+            }
+          });
+          paragraph.append(input);
         } else {
-          editSegment(editor, segment.source_segment_id);
+          const content = text("span", draft);
+          content.className = "transcript-segment";
+          content.dataset.segmentId = segment.source_segment_id;
+          content.tabIndex = 0;
+          content.setAttribute("role", "button");
+          content.setAttribute("aria-label", "Изменить фрагмент");
+          content.addEventListener("click", () => editSegment(editor, segment.source_segment_id));
+          content.addEventListener("keydown", (event) => {
+            if (!["Enter", " "].includes(event.key)) return;
+            event.preventDefault();
+            editSegment(editor, segment.source_segment_id);
+          });
+          paragraph.append(content);
+          if (index < currentTurn.segments.length - 1) paragraph.append(document.createTextNode(" "));
         }
       });
-      actions.append(edit);
-      const suggestions = editor.suggestions?.filter((item) => item.source_segment_id === segment.source_segment_id) || [];
+      body.append(paragraph);
+      const suggestions = currentTurn.segments.flatMap((segment) =>
+        (editor.suggestions || []).filter((item) => item.source_segment_id === segment.source_segment_id)
+      );
       if (suggestions.length) {
         const suggestionMenu = document.createElement("details");
         suggestionMenu.className = "turn-suggestions";
-        const summary = text("summary", "Термины: " + suggestions.length);
+        suggestionMenu.append(text("summary", "Термины: " + suggestions.length));
         const suggestionList = document.createElement("div");
         suggestionList.className = "turn-suggestions-list";
         suggestions.forEach((suggestion) => {
@@ -681,122 +792,213 @@
           button.type = "button";
           button.className = "menu-item";
           button.addEventListener("click", () => {
-            if (editor.saving) return;
+            const segment = editor.revision.segments.find((item) => item.source_segment_id === suggestion.source_segment_id);
+            if (!segment || editor.saving) return;
             const current = editor.segmentDrafts.get(segment.source_segment_id) ?? segment.text;
             const start = suggestion.start_offset;
             const end = suggestion.end_offset;
-            if (Number.isInteger(start) && Number.isInteger(end) &&
-                current.slice(start, end).localeCompare(
-                  suggestion.matched_variant, undefined, { sensitivity: "accent" },
-                ) === 0) {
+            if (Number.isInteger(start) && Number.isInteger(end) && current.slice(start, end) === suggestion.matched_variant) {
               editor.segmentDrafts.set(segment.source_segment_id, current.slice(0, start) + suggestion.canonical + current.slice(end));
             } else if (!Number.isInteger(start) && current.includes(suggestion.matched_variant)) {
               editor.segmentDrafts.set(segment.source_segment_id, current.replace(suggestion.matched_variant, suggestion.canonical));
             } else {
-              notify("Текст реплики уже изменён. Проверьте подсказку вручную.", true);
+              notify("Текст фрагмента уже изменён. Проверьте подсказку вручную.", true);
               return;
             }
-            editSegment(editor, segment.source_segment_id);
+            renderTranscript();
             notify("Подсказка внесена в черновик. Сохраните правки.");
           });
           suggestionList.append(button);
         });
-        suggestionMenu.append(summary, suggestionList);
-        actions.append(suggestionMenu);
+        suggestionMenu.append(suggestionList);
+        body.append(suggestionMenu);
       }
-      body.append(actions);
       row.append(seekButton, body);
       list.append(row);
     });
   }
 
-  function renderGroups() {
-    const list = byId("groups-list");
-    list.replaceChildren();
+  async function mergeSpeakerGroup(editor, sourceGroupId, targetGroupId, button) {
+    if (!targetGroupId || sourceGroupId === targetGroupId || editor.saving) return;
+    button.disabled = true;
+    try {
+      const revision = await request("/jobs/" + encodeURIComponent(editor.jobId) + "/transcript/groups/merge", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_group_id: sourceGroupId, target_group_id: targetGroupId, expected_revision_number: editor.revision.revision.number }),
+      });
+      if (state.editor !== editor) return;
+      applyEditorRevision(editor, revision);
+      editor.selectedGroupId = targetGroupId;
+      renderSpeakerPanel();
+      renderTranscript();
+      notify("Группы объединены. При необходимости это можно отменить в этой панели.");
+    } catch (error) {
+      showError(error);
+    } finally {
+      if (state.editor === editor) button.disabled = false;
+    }
+  }
+
+  async function unmergeSpeakerGroup(editor, sourceGroupId, button) {
+    if (editor.saving) return;
+    button.disabled = true;
+    try {
+      const revision = await request("/jobs/" + encodeURIComponent(editor.jobId) + "/transcript/groups/unmerge", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_group_id: sourceGroupId, expected_revision_number: editor.revision.revision.number }),
+      });
+      if (state.editor !== editor) return;
+      applyEditorRevision(editor, revision);
+      editor.selectedGroupId = sourceGroupId;
+      renderSpeakerPanel();
+      renderTranscript();
+      notify("Объединение групп отменено.");
+    } catch (error) {
+      showError(error);
+    } finally {
+      if (state.editor === editor) button.disabled = false;
+    }
+  }
+
+  function renderSpeakerPanel() {
+    const panel = byId("speaker-panel");
+    panel.replaceChildren();
     const editor = state.editor;
     if (!editor?.revision) {
-      list.append(text("p", "Группы станут доступны после публикации транскрипции."));
+      panel.append(text("p", "Говорящие станут доступны после публикации транскрипции."));
       return;
     }
-    const assignmentLabels = {
-      unknown: "не определён",
-      ambiguous: "несколько вариантов",
-      candidate: "требуется проверка",
-      auto_assigned: "распознано автоматически",
-      confirmed: "подтверждено вручную",
-      rejected: "отклонено",
-    };
-    editor.revision.groups.forEach((group) => {
-      const row = document.createElement("article");
-      row.className = "group-editor";
-      row.dataset.groupId = group.speaker_group_id;
-      const context = editor.revision.segments.filter((segment) =>
-        segment.speaker_group_ids?.includes(group.speaker_group_id));
-      const overlaps = context.filter((segment) => segment.requires_review || segment.speaker_group_ids?.length > 1).length;
-      const name = document.createElement("input");
-      name.className = "group-label-input";
-      name.value = editor.identityDrafts.get(group.speaker_group_id) ?? group.label;
-      name.maxLength = 240;
-      name.placeholder = "Имя и фамилия";
-      name.setAttribute("aria-label", "Имя и фамилия говорящего");
-      name.addEventListener("input", () => {
-        editor.identityDrafts.set(group.speaker_group_id, name.value);
-        identity.disabled = !name.value.trim() || editor.saving;
-      });
-      const heading = document.createElement("div");
-      heading.className = "group-heading";
-      const summary = document.createElement("div");
-      summary.append(
-        text("small", group.merged_into_group_id
-          ? "Объединена с " + group.merged_into_group_id
-          : assignmentLabels[group.assignment_status] || "не определён"),
-        text("small", context.length + " реплик" + (overlaps ? " · " + overlaps + " на проверку" : "")),
-      );
-      heading.append(name, summary);
-      const controls = document.createElement("div");
-      controls.className = "group-controls";
-      const firstTiming = context.length ? editor.timingBySegment.get(context[0].source_segment_id) : null;
-      if (firstTiming) {
-        const play = text("button", "Слушать");
-        play.type = "button";
-        play.className = "secondary";
-        play.addEventListener("click", () => seek(firstTiming.start_ms));
-        controls.append(play);
-      }
-      const identity = text("button", "Сохранить имя");
-      identity.type = "button";
-      identity.className = "secondary";
-      identity.disabled = !name.value.trim() || editor.saving;
-      identity.addEventListener("click", () => saveGroupIdentity(editor, group, name, identity));
-      controls.append(identity);
-      row.append(heading, controls);
-      if (context.length) {
-        const excerpt = text("p", context[0].text);
-        excerpt.className = "group-excerpt";
-        row.append(excerpt);
-      }
-      if (group.assignment_status === "confirmed" && group.label.trim()) {
-        const sample = document.createElement("details");
-        sample.className = "sample-control";
-        sample.append(text("summary", "Добавить образец голоса"));
-        const sampleBody = document.createElement("div");
-        const consent = document.createElement("input");
-        consent.type = "checkbox";
-        const consentLabel = document.createElement("label");
-        consentLabel.className = "sample-consent";
-        consentLabel.append(consent, text("span", "После проверки качества добавить образец для этого говорящего"));
-        const enroll = text("button", "Добавить образец");
-        enroll.type = "button";
-        enroll.className = "secondary enroll-sample";
-        enroll.disabled = true;
-        consent.addEventListener("change", () => { enroll.disabled = !consent.checked || editor.saving; });
-        enroll.addEventListener("click", () => enrollSpeakerSample(editor, group, consent, enroll));
-        sampleBody.append(consentLabel, enroll);
-        sample.append(sampleBody);
-        row.append(sample);
-      }
-      list.append(row);
+    const groups = visibleGroups(editor);
+    byId("open-speakers-button").textContent = "Говорящие · " + groups.length;
+    byId("open-speakers-button").disabled = !groups.length;
+    if (!groups.length) {
+      panel.append(text("p", "Группы говорящих не найдены."));
+      return;
+    }
+    const groupId = groups.some((group) => group.speaker_group_id === editor.selectedGroupId)
+      ? editor.selectedGroupId : groups[0].speaker_group_id;
+    editor.selectedGroupId = groupId;
+    const group = editor.groupById.get(groupId);
+    const context = groupSegments(editor, groupId);
+    const pickerLabel = text("label", "Группа говорящего");
+    const picker = document.createElement("select");
+    picker.className = "speaker-picker";
+    picker.setAttribute("aria-label", "Выбрать группу говорящего");
+    groups.forEach((item) => {
+      const option = text("option", groupDisplayLabel(editor, item.speaker_group_id) + " · " + groupSegments(editor, item.speaker_group_id).length + " реплик");
+      option.value = item.speaker_group_id;
+      option.selected = item.speaker_group_id === groupId;
+      picker.append(option);
     });
+    picker.addEventListener("change", () => {
+      editor.selectedGroupId = picker.value;
+      renderSpeakerPanel();
+      renderTranscript();
+    });
+    pickerLabel.append(picker);
+    const metrics = text("p", context.length + " реплик · " + formatTime(groupDuration(editor, groupId)) + " речи");
+    metrics.className = "speaker-metrics";
+    const name = document.createElement("input");
+    name.className = "group-label-input";
+    name.value = editor.identityDrafts.get(groupId) ?? (isGenericGroupLabel(group.label) ? "" : group.label);
+    name.maxLength = 240;
+    name.placeholder = "Имя и фамилия";
+    name.setAttribute("aria-label", "Имя и фамилия говорящего");
+    const identity = text("button", "Сохранить имя");
+    identity.type = "button";
+    identity.disabled = !name.value.trim() || editor.saving;
+    name.addEventListener("input", () => {
+      editor.identityDrafts.set(groupId, name.value);
+      identity.disabled = !name.value.trim() || editor.saving;
+    });
+    identity.addEventListener("click", () => saveGroupIdentity(editor, group, name, identity));
+    const identityRow = document.createElement("div");
+    identityRow.className = "speaker-identity";
+    identityRow.append(name, identity);
+    panel.append(pickerLabel, metrics, identityRow);
+    const samples = sampleSegments(editor, groupId);
+    const samplesBlock = document.createElement("section");
+    samplesBlock.className = "speaker-samples";
+    samplesBlock.append(text("h3", "Фрагменты для проверки"));
+    const samplesHelp = text("p", "Прослушайте несколько разных мест записи перед тем, как подтверждать имя.");
+    samplesHelp.className = "muted";
+    samplesBlock.append(samplesHelp);
+    samples.forEach((segment, index) => {
+      const timing = editor.timingBySegment.get(segment.source_segment_id);
+      if (!timing) return;
+      const row = document.createElement("article");
+      row.className = "speaker-sample";
+      const play = text("button", "Слушать " + formatTime(timing.start_ms) + "—" + formatTime(timing.end_ms));
+      play.type = "button";
+      play.className = "secondary";
+      play.addEventListener("click", () => playSample(editor, segment));
+      const replay = text("button", "Повторить");
+      replay.type = "button";
+      replay.className = "secondary";
+      replay.addEventListener("click", () => playSample(editor, segment));
+      row.append(text("strong", "Фрагмент " + (index + 1)), text("p", segment.text), play, replay);
+      samplesBlock.append(row);
+    });
+    panel.append(samplesBlock);
+    const merge = document.createElement("details");
+    merge.className = "speaker-merge";
+    merge.append(text("summary", "Сопоставить с другой группой"));
+    const mergeBody = document.createElement("div");
+    const target = document.createElement("select");
+    target.setAttribute("aria-label", "Группа для объединения");
+    target.append(text("option", "Выберите группу"));
+    target.options[0].value = "";
+    groups.filter((item) => item.speaker_group_id !== groupId).forEach((item) => {
+      const option = text("option", groupDisplayLabel(editor, item.speaker_group_id));
+      option.value = item.speaker_group_id;
+      target.append(option);
+    });
+    const mergeButton = text("button", "Объединить группы");
+    mergeButton.type = "button";
+    mergeButton.className = "secondary";
+    mergeButton.disabled = groups.length < 2;
+    mergeButton.addEventListener("click", () => mergeSpeakerGroup(editor, groupId, target.value, mergeButton));
+    mergeBody.append(target, mergeButton);
+    merge.append(mergeBody);
+    panel.append(merge);
+    const mergedGroups = editor.revision.groups.filter((item) => item.merged_into_group_id);
+    if (mergedGroups.length) {
+      const restore = document.createElement("details");
+      restore.className = "speaker-merge";
+      restore.append(text("summary", "Отменить объединение (" + mergedGroups.length + ")"));
+      const restoreBody = document.createElement("div");
+      mergedGroups.forEach((item) => {
+        const itemRow = document.createElement("div");
+        const button = text("button", "Разъединить «" + item.label + "»");
+        button.type = "button";
+        button.className = "secondary";
+        button.addEventListener("click", () => unmergeSpeakerGroup(editor, item.speaker_group_id, button));
+        itemRow.append(text("span", item.label + " → " + groupLabel(editor, item.merged_into_group_id)), button);
+        restoreBody.append(itemRow);
+      });
+      restore.append(restoreBody);
+      panel.append(restore);
+    }
+    if (group.assignment_status === "confirmed" && group.label.trim()) {
+      const sample = document.createElement("details");
+      sample.className = "sample-control";
+      sample.append(text("summary", "Дополнительно: добавить голосовой образец"));
+      const sampleBody = document.createElement("div");
+      const consent = document.createElement("input");
+      consent.type = "checkbox";
+      const consentLabel = document.createElement("label");
+      consentLabel.className = "sample-consent";
+      consentLabel.append(consent, text("span", "Я проверил(а) фрагменты и подтверждаю добавление образца"));
+      const enroll = text("button", "Добавить образец");
+      enroll.type = "button";
+      enroll.className = "secondary enroll-sample";
+      enroll.disabled = true;
+      consent.addEventListener("change", () => { enroll.disabled = !consent.checked || editor.saving; });
+      enroll.addEventListener("click", () => enrollSpeakerSample(editor, group, consent, enroll));
+      sampleBody.append(consentLabel, enroll);
+      sample.append(sampleBody);
+      panel.append(sample);
+    }
   }
 
   function applyEditorRevision(editor, revision) {
@@ -829,7 +1031,7 @@
     }
     if (displayName === group.label) {
       editor.identityDrafts.delete(group.speaker_group_id);
-      renderGroups();
+      renderSpeakerPanel();
       return;
     }
     button.disabled = true;
@@ -849,7 +1051,7 @@
       if (state.editor !== editor) return;
       applyEditorRevision(editor, revision);
       editor.identityDrafts.delete(group.speaker_group_id);
-      renderGroups();
+      renderSpeakerPanel();
       renderTranscript();
       byId("editor-help").textContent = "Ревизия " + revision.revision.number + ". Имя применено ко всем репликам группы.";
       notify("Имя говорящего сохранено для всей группы.");
@@ -894,7 +1096,7 @@
   function renderSubtitle(timeMs) {
     const subtitle = currentSubtitle(timeMs);
     byId("subtitle-line").textContent = subtitle ? subtitle.text : "Субтитры появятся после обработки.";
-    document.querySelectorAll(".transcript-row").forEach((row) => {
+    document.querySelectorAll(".transcript-segment").forEach((row) => {
       const id = row.dataset.segmentId;
       const timing = state.editor?.timingBySegment.get(id);
       row.classList.toggle("active", Boolean(timing && timeMs >= timing.start_ms && timeMs <= timing.end_ms));
@@ -934,7 +1136,7 @@
         }
       }
       if (state.editor !== editor || generation !== state.generation || hasEditorChanges(editor)) return;
-      renderGroups();
+      renderSpeakerPanel();
       renderTranscript();
       byId("save-editor-button").disabled = !transcript;
       byId("download-text-button").hidden = !transcript;
@@ -945,7 +1147,7 @@
       if (error instanceof StaleSessionError || state.editor !== editor) return;
       editor.unavailable = error.message;
       if (!editor.revision && !hasEditorChanges(editor)) {
-        renderGroups();
+        renderSpeakerPanel();
         renderTranscript();
         byId("editor-help").textContent = error.message;
       }
@@ -1007,7 +1209,7 @@
       editor.segmentDrafts.clear();
       editor.editingSegmentId = null;
       byId("editor-conflict").hidden = true;
-      renderGroups();
+      renderSpeakerPanel();
       renderTranscript();
       notify("Правки сохранены как ревизия " + result.revision.number + ".");
     } catch (error) {
@@ -1215,16 +1417,25 @@
 
   byId("save-editor-button").addEventListener("click", saveEditor);
   byId("download-text-button").addEventListener("click", downloadTranscriptText);
+  byId("open-speakers-button").addEventListener("click", () => openSpeakers());
+  byId("close-speakers-button").addEventListener("click", closeSpeakers);
+  byId("speakers-dialog").addEventListener("cancel", () => {
+    stopSamplePlayback();
+    const editor = state.editor;
+    if (editor) {
+      editor.selectedGroupId = null;
+      requestAnimationFrame(renderTranscript);
+    }
+  });
   byId("copy-editor-draft").addEventListener("click", async () => {
     const editor = state.editor;
     if (!editor?.revision) return;
     const lines = editor.revision.segments.map((segment) => {
       return editor.segmentDrafts.get(segment.source_segment_id) ?? segment.text;
     });
-    const groups = Array.from(document.querySelectorAll(".group-editor")).map((row) => {
-      const label = row.querySelector(".group-label-input")?.value || "";
-      return label;
-    });
+    const groups = visibleGroups(editor).map((group) =>
+      editor.identityDrafts.get(group.speaker_group_id) ?? group.label
+    );
     try {
       await navigator.clipboard.writeText("Говорящие:\n" + groups.join("\n") + "\n\nТекст:\n" + lines.join("\n\n"));
       notify("Ваши правки скопированы. Теперь можно обновить запись.");
@@ -1354,6 +1565,11 @@
 
   byId("audio-player").addEventListener("timeupdate", (event) => {
     const player = event.currentTarget;
+    if (state.editor?.sampleStopAt && player.currentTime >= state.editor.sampleStopAt) {
+      player.pause();
+      player.currentTime = state.editor.sampleStopAt;
+      state.editor.sampleStopAt = null;
+    }
     const timeMs = player.currentTime * 1000;
     const percentage = Number.isFinite(player.duration) && player.duration > 0
       ? player.currentTime / player.duration * 100 : 0;
@@ -1364,6 +1580,7 @@
     byId("audio-help").hidden = true;
     byId("audio-help").textContent = "";
   });
+  byId("audio-player").addEventListener("ended", stopSamplePlayback);
   byId("audio-player").addEventListener("error", () => {
     if (!state.editor) return;
     const player = byId("audio-player");

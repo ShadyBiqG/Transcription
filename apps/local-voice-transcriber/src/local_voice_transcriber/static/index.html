@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Transcription Next</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20261023-compact-1">
+    <link rel="stylesheet" href="/static/styles.css?v=20261023-editor-1">
   </head>
   <body>
     <main class="shell">
@@ -93,8 +93,7 @@
           <div id="editor-conflict" class="notice error" hidden role="alert"><p id="editor-conflict-message"></p><div class="job-actions"><button type="button" id="copy-editor-draft" class="secondary">Скопировать мои правки</button><button type="button" id="reload-editor" class="secondary">Обновить с сервера</button></div></div>
           <div class="editor-layout">
             <section class="card player-card"><div class="waveform" aria-label="Шкала аудио"><span></span></div><audio id="audio-player" controls preload="metadata"></audio><p id="audio-help" class="audio-help" hidden role="status"></p><div id="subtitle-line" class="subtitle-line">Субтитры появятся после обработки.</div></section>
-            <aside class="card groups-card"><h3>Говорящие</h3><p class="muted">Укажите имя и фамилию один раз для всей группы — оно применится ко всем её репликам.</p><div id="groups-list"><p class="muted">Нет выбранной записи.</p></div></aside>
-            <section class="card transcript-card"><div class="transcript-heading"><div><h3>Транскрипция</h3><p class="muted" id="editor-help">Выберите готовую запись.</p></div><div class="transcript-actions"><button type="button" id="download-text-button" class="secondary" hidden>Скачать .txt</button><button type="button" id="save-editor-button" disabled>Сохранить правки</button></div></div><div id="transcript-list"><p class="muted">Исходные реплики будут доступны после обработки.</p></div></section>
+            <section class="card transcript-card"><div class="transcript-heading"><div><h3>Транскрипция</h3><p class="muted" id="editor-help">Выберите готовую запись.</p></div><div class="transcript-actions"><button type="button" id="open-speakers-button" class="secondary" disabled>Говорящие · 0</button><button type="button" id="download-text-button" class="secondary" hidden>Скачать .txt</button><button type="button" id="save-editor-button" disabled>Сохранить правки</button></div></div><div id="transcript-list"><p class="muted">Исходные реплики будут доступны после обработки.</p></div></section>
           </div>
         </section>
         <section class="view" id="admin-view">
@@ -104,6 +103,13 @@
         </section>
       </section>
     </main>
-    <script src="/static/app.js?v=20261023-compact-1" defer></script>
+    <dialog id="speakers-dialog" class="speakers-dialog" aria-labelledby="speakers-dialog-title">
+      <section class="speakers-panel">
+        <header class="speakers-dialog-heading"><div><p class="eyebrow">Проверка говорящих</p><h2 id="speakers-dialog-title">Говорящие</h2></div><button type="button" id="close-speakers-button" class="secondary icon-button" aria-label="Закрыть говорящих" title="Закрыть">×</button></header>
+        <p class="muted">Выберите группу, прослушайте несколько фрагментов и укажите имя один раз. Подпись применяется ко всем её репликам.</p>
+        <div id="speaker-panel"><p class="muted">Нет выбранной записи.</p></div>
+      </section>
+    </dialog>
+    <script src="/static/app.js?v=20261023-editor-1" defer></script>
   </body>
 </html>

@@ -82,6 +82,38 @@ def test_converts_local_sherpa_turns_to_ordered_domain_intervals(tmp_path: Path)
     assert diarizer.calls == [(0.0, 0.5, -0.5)]
 
 
+def test_preserves_adjacent_turns_of_the_same_local_sherpa_cluster(tmp_path: Path) -> None:
+    pack, models_root, audio_root = make_pack(tmp_path)
+    wav_path = write_pcm_wav(audio_root / "run.wav")
+    adapter = SherpaDiarizationAdapter(
+        pack,
+        models_root=models_root,
+        audio_root=audio_root,
+        loader=lambda _pack, _parameters: FakeDiarizer(
+            [
+                RawTurn(start=0.5, end=1.0, speaker=0),
+                RawTurn(start=1.25, end=1.75, speaker=0),
+            ]
+        ),
+    )
+
+    intervals = adapter.diarize(wav_path)
+
+    assert [
+        (
+            item.interval_id,
+            item.start_ms,
+            item.end_ms,
+            item.raw_speaker_label,
+            item.speaker_group_id,
+        )
+        for item in intervals
+    ] == [
+        ("diarization-000001", 500, 1000, "0", "local-speaker:0"),
+        ("diarization-000002", 1250, 1750, "0", "local-speaker:0"),
+    ]
+
+
 def test_rejects_unverified_model_path_and_wav_outside_private_root(tmp_path: Path) -> None:
     pack, models_root, audio_root = make_pack(tmp_path)
     outside_wav = write_pcm_wav(tmp_path / "outside.wav")

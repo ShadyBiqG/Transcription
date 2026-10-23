@@ -90,11 +90,11 @@ $stagingRoot = Join-Path $dataDirectory (".transcription-next-model-staging-" + 
 Assert-FreeSpace $dataDirectory
 New-Item -ItemType Directory -Force -Path $modelsRoot, $toolsRoot, $stagingRoot | Out-Null
 
-$asrDirectoryName = "asr/gigaam-v3-ctc-322c3b29"
+$asrDirectoryName = "asr/gigaam-v3-e2e-ctc-322c3b29"
 $asrFiles = [ordered]@{
     "config.json" = "0641fcf73f4af791c73f05083e38a658ff5dcbee3534a0c61396c10f4b97f0fe"
-    "v3_ctc.onnx" = "1fb978d4f41e1334003fae9d29f2d9844d4132315a90553a4b986839051ba9d3"
-    "v3_vocab.txt" = "a9143c30844d3c0bee3e9e927e4084774eb1b9eeaafc473b2c4521e4911a7c07"
+    "v3_e2e_ctc.onnx" = "377701bd33568f4733feec2db5b2dc12544fd09a5a5dfa69ccf55d161f84027a"
+    "v3_e2e_ctc_vocab.txt" = "142de7570b3de5b3035ce111a89c228e80e6085273731d944093ddf24fa539cd"
 }
 $vadDirectoryName = "vad/silero-v6-b3e3ee3c"
 $vadFiles = [ordered]@{
@@ -192,8 +192,8 @@ try {
         schema_version = 1
         language = "ru"
         asr = [ordered]@{
-            pack_id = "gigaam-v3-ctc-322c3b29"
-            model_name = "gigaam-v3-ctc"
+            pack_id = "gigaam-v3-e2e-ctc-322c3b29"
+            model_name = "gigaam-v3-e2e-ctc"
             directory = $asrDirectoryName
             files = $asrFiles
         }

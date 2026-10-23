@@ -105,7 +105,14 @@ class OneWorkerDispatcher:
             worker_id=self._worker_id, lease_seconds=self._lease_seconds
         )
         if claimed is None:
+            # Успешная проверка очереди означает, что SQLite снова доступна.
+            # Состояние должно отражать это до публикации READY, иначе /ready
+            # может кратко сообщить о деградации для уже готовой записи.
+            self._set_state("running")
             return False
+        # Не ждём завершения process(): claim уже доказал восстановление доступа
+        # к очереди. Это также исключает гонку между mark_ready() и /ready.
+        self._set_state("running")
         job, run = claimed
         heartbeat = asyncio.create_task(self._heartbeat(run.id), name=f"next-heartbeat-{run.id}")
         try:

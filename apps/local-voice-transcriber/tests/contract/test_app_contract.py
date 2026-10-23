@@ -202,6 +202,8 @@ def test_static_index_is_public_without_api_secrets(client: TestClient) -> None:
     assert 'class="menu-item" data-view="jobs">Записи</button>' in response.text
     assert 'class="menu-item admin-only" data-view="profiles"' in response.text
     assert 'id="download-text-button"' in response.text
+    assert 'id="open-speakers-button"' in response.text
+    assert 'id="speakers-dialog"' in response.text
 
     script = client.get("/static/app.js")
 
@@ -214,5 +216,13 @@ def test_static_index_is_public_without_api_secrets(client: TestClient) -> None:
     assert 'addEventListener("drop"' in script.text
     assert 'audio-player").addEventListener("error"' in script.text
     assert '"/identity"' in script.text
+    assert '"/transcript/groups/merge"' in script.text
+    assert '"/transcript/groups/unmerge"' in script.text
+    assert "function playSample" in script.text
+    assert "function stopSamplePlayback" in script.text
+    assert 'if (!player.paused) player.pause();' in script.text
+    assert "function isGenericGroupLabel" in script.text
+    assert 'isGenericGroupLabel(group.label) ? "" : group.label' in script.text
+    assert "function renderSpeakerPanel" in script.text
     assert 'transcript/export?format=txt' in script.text
     assert 'group.assignment_status === "confirmed"' in script.text

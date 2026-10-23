@@ -156,6 +156,48 @@ def test_transient_sqlite_error_degrades_then_recovers(
     assert "/private/path" not in caplog.text
 
 
+def test_dispatcher_recovers_before_publishing_ready_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = queued_repository(tmp_path)
+    dispatcher = OneWorkerDispatcher(
+        repository,
+        SuccessfulProcessor(),
+        worker_id="worker",
+        lease_seconds=1,
+        poll_seconds=0.01,
+    )
+    original_claim = repository.claim_next_run
+    original_mark_ready = repository.mark_ready
+    failures = 0
+
+    def fail_first_claim(*args, **kwargs):
+        nonlocal failures
+        failures += 1
+        if failures == 1:
+            raise sqlite3.OperationalError("temporary database error")
+        return original_claim(*args, **kwargs)
+
+    def mark_ready_and_check_state(*args, **kwargs):
+        original_mark_ready(*args, **kwargs)
+        assert dispatcher.state == "running"
+
+    monkeypatch.setattr(repository, "claim_next_run", fail_first_claim)
+    monkeypatch.setattr(repository, "mark_ready", mark_ready_and_check_state)
+
+    async def scenario() -> None:
+        dispatcher.start()
+        try:
+            async with asyncio.timeout(2):
+                while repository.get_run("run-1").status is not JobStatus.READY:
+                    await asyncio.sleep(0.01)
+        finally:
+            await dispatcher.stop()
+
+    asyncio.run(scenario())
+    assert failures >= 2
+
+
 def test_unexpected_dispatch_task_failure_exposes_stopped_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

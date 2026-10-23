@@ -20,9 +20,15 @@
 
 ## Состав стандартного пакета
 
-- ASR: GigaAM v3 CTC (`gigaam-v3-ctc`) из закреплённого revision
-  `322c3b29492673eb7d0b434bfa9dfb8653e34d02`: `config.json`, `v3_ctc.onnx`,
-  `v3_vocab.txt`. Источник: [istupakov/gigaam-v3-onnx](https://huggingface.co/istupakov/gigaam-v3-onnx), лицензия MIT.
+- ASR: GigaAM v3 E2E CTC (`gigaam-v3-e2e-ctc`) из закреплённого revision
+  `322c3b29492673eb7d0b434bfa9dfb8653e34d02`: `config.json`,
+  `v3_e2e_ctc.onnx`, `v3_e2e_ctc_vocab.txt`. Источник:
+  [istupakov/gigaam-v3-onnx](https://huggingface.co/istupakov/gigaam-v3-onnx),
+  лицензия MIT. E2E-вариант возвращает текст с нормализацией и пунктуацией;
+  он не является фильтром слов-паразитов и не гарантирует их удаления.
+  При обновлении прежний каталог `gigaam-v3-ctc-322c3b29` не удаляется:
+  установщик сначала целиком проверяет отдельный E2E-каталог и только затем
+  заменяет manifest.
 - VAD: Silero (`silero_vad.onnx`) из закреплённого revision
   `b3e3ee3cce4c11ceb63b1a0b229d916069c1ddf6`. Источник:
   [istupakov/silero-vad-onnx](https://huggingface.co/istupakov/silero-vad-onnx),

@@ -522,10 +522,12 @@ class EditorRepository:
             )
             previous = connection.execute(
                 """
-                SELECT id FROM next_group_merge_operations
-                WHERE job_id = ? AND owner_id = ? AND source_group_id = ?
-                  AND target_group_id = ? AND operation = 'merge' AND reversed_by IS NULL
-                ORDER BY created_at DESC, id DESC LIMIT 1
+                SELECT operation.id FROM next_group_merge_operations AS operation
+                JOIN next_transcript_revisions AS revision ON revision.id = operation.revision_id
+                WHERE operation.job_id = ? AND operation.owner_id = ?
+                  AND operation.source_group_id = ? AND operation.target_group_id = ?
+                  AND operation.operation = 'merge' AND operation.reversed_by IS NULL
+                ORDER BY revision.number DESC, operation.id DESC LIMIT 1
                 """,
                 (job_id, owner_id, source_group_id, target_group_id),
             ).fetchone()
@@ -554,8 +556,10 @@ class EditorRepository:
             self._ensure_owned_job(connection, owner_id=owner_id, job_id=job_id)
             rows = connection.execute(
                 """
-                SELECT * FROM next_group_merge_operations
-                WHERE job_id = ? AND owner_id = ? ORDER BY created_at, id
+                SELECT operation.* FROM next_group_merge_operations AS operation
+                JOIN next_transcript_revisions AS revision ON revision.id = operation.revision_id
+                WHERE operation.job_id = ? AND operation.owner_id = ?
+                ORDER BY revision.number, operation.id
                 """,
                 (job_id, owner_id),
             ).fetchall()
