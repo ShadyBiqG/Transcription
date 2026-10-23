@@ -48,6 +48,13 @@ function Assert-FileSet([string]$Directory, [System.Collections.IDictionary]$Fil
     }
 }
 
+function Assert-FileSizes([string]$Directory, [System.Collections.IDictionary]$Sizes) {
+    foreach ($name in $Sizes.Keys) {
+        Assert-RelativeName ([string]$name)
+        Assert-FileSize (Join-Path $Directory $name) ([Int64]$Sizes[$name])
+    }
+}
+
 function Get-OrDownload([string]$Uri, [string]$Destination, [string]$Sha256) {
     if ($script:ApprovedDownloadUris -notcontains $Uri) {
         throw "Refusing an unapproved model download URL."
@@ -69,82 +76,6 @@ function Get-OrDownload([string]$Uri, [string]$Destination, [string]$Sha256) {
         if (Test-Path -LiteralPath $partial -PathType Leaf) {
             Remove-Item -LiteralPath $partial -Force
         }
-    }
-}
-
-function Assert-SafeZipArchive([string]$ArchivePath) {
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $archive = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
-    try {
-        foreach ($entry in $archive.Entries) {
-            $name = $entry.FullName.Replace("\", "/")
-            if ([string]::IsNullOrWhiteSpace($name)) {
-                continue
-            }
-            if (
-                [System.IO.Path]::IsPathRooted($name) -or
-                $name -match '^[A-Za-z]:' -or
-                $name -match '(^|/)\.\.(/|$)' -or
-                $name.IndexOf([char]0) -ge 0
-            ) {
-                throw "Verified archive contains an unsafe path."
-            }
-        }
-    }
-    finally {
-        $archive.Dispose()
-    }
-}
-
-function Assert-LlamaServer([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw "llama-server.exe was not installed."
-    }
-    & $Path --version | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "The installed llama-server.exe did not start."
-    }
-}
-
-function Install-CleanerRuntime(
-    [string]$ArchivePath,
-    [string]$DestinationDirectory,
-    [string]$StagingDirectory
-) {
-    $destinationExecutable = Join-Path $DestinationDirectory "llama-server.exe"
-    if (Test-Path -LiteralPath $DestinationDirectory) {
-        Assert-LlamaServer $destinationExecutable
-        return [PSCustomObject]@{
-            Path = $destinationExecutable
-            Published = $false
-        }
-    }
-
-    $published = $false
-    try {
-        Assert-SafeZipArchive $ArchivePath
-        $expandedDirectory = Join-Path $StagingDirectory "expanded"
-        Expand-Archive -LiteralPath $ArchivePath -DestinationPath $expandedDirectory -Force
-        $serverCandidates = @(Get-ChildItem -LiteralPath $expandedDirectory -Filter "llama-server.exe" -File -Recurse)
-        if ($serverCandidates.Count -ne 1) {
-            throw "The verified llama.cpp archive has an unexpected layout."
-        }
-        $runtimeSourceDirectory = Split-Path -Parent $serverCandidates[0].FullName
-        Assert-LlamaServer $serverCandidates[0].FullName
-        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $DestinationDirectory) | Out-Null
-        Move-Item -LiteralPath $runtimeSourceDirectory -Destination $DestinationDirectory -ErrorAction Stop
-        $published = $true
-        Assert-LlamaServer $destinationExecutable
-        return [PSCustomObject]@{
-            Path = $destinationExecutable
-            Published = $true
-        }
-    }
-    catch {
-        if ($published -and (Test-Path -LiteralPath $DestinationDirectory)) {
-            Remove-Item -LiteralPath $DestinationDirectory -Recurse -Force
-        }
-        throw
     }
 }
 
@@ -181,11 +112,20 @@ $minimumDiskSpaceBytes = 7GB
 Assert-FreeSpace $dataDirectory $minimumDiskSpaceBytes
 New-Item -ItemType Directory -Force -Path $modelsRoot, $toolsRoot, $stagingRoot | Out-Null
 
-$asrDirectoryName = "asr/gigaam-v3-e2e-ctc-322c3b29"
+$asrDirectoryName = "asr/gigaam-v3-rnnt-322c3b29"
 $asrFiles = [ordered]@{
     "config.json" = "0641fcf73f4af791c73f05083e38a658ff5dcbee3534a0c61396c10f4b97f0fe"
-    "v3_e2e_ctc.onnx" = "377701bd33568f4733feec2db5b2dc12544fd09a5a5dfa69ccf55d161f84027a"
-    "v3_e2e_ctc_vocab.txt" = "142de7570b3de5b3035ce111a89c228e80e6085273731d944093ddf24fa539cd"
+    "v3_rnnt_encoder.onnx" = "7ae7509c3f1128369564df0b00e2ee4950adf539de2392ac5c800a5bc04c7132"
+    "v3_rnnt_decoder.onnx" = "443c3b7bd42b453611618135d6b1e7d9467e5dd97c8a68501da4aa355750c0da"
+    "v3_rnnt_joint.onnx" = "fd1d02f45c2ad3d6b67cc149811ad794ab4b020ed49a0a9e2790a8619d1cddd8"
+    "v3_vocab.txt" = "a9143c30844d3c0bee3e9e927e4084774eb1b9eeaafc473b2c4521e4911a7c07"
+}
+$asrFileSizes = [ordered]@{
+    "config.json" = 135
+    "v3_rnnt_encoder.onnx" = 885084534
+    "v3_rnnt_decoder.onnx" = 3331429
+    "v3_rnnt_joint.onnx" = 1440448
+    "v3_vocab.txt" = 198
 }
 $vadDirectoryName = "vad/silero-v6-b3e3ee3c"
 $vadFiles = [ordered]@{
@@ -198,29 +138,17 @@ $voiceFiles = [ordered]@{
 }
 $ffmpegDirectoryName = "ffmpeg-n8.1-20261021"
 $ffmpegArchiveSha256 = "fe7ce100a275215b1f5eac9b55731186679f493bba0aba044283928e428106d4"
-$cleanerModelDirectoryName = "cleaner/qwen2.5-1.5b-instruct-q4-k-m-91cad511"
-$cleanerModelFileName = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
-$cleanerModelRevision = "91cad51170dc346986eccefdc2dd33a9da36ead9"
-$cleanerModelSha256 = "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e"
-$cleanerModelSize = 1117320736
-$cleanerRuntimeDirectoryName = "llama.cpp-b5092-win-noavx-x64"
-$cleanerRuntimeArchiveName = "llama-b5092-bin-win-noavx-x64.zip"
-$cleanerRuntimeArchiveSha256 = "4a4c6aef72ff13122d56a9ab59acf697603ce9084087427400ae7d1b7ebaef71"
-$cleanerModelUri = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/$cleanerModelRevision/$cleanerModelFileName"
-$cleanerRuntimeUri = "https://github.com/ggml-org/llama.cpp/releases/download/b5092/$cleanerRuntimeArchiveName"
 $script:ApprovedDownloadUris = @(
     "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/322c3b29492673eb7d0b434bfa9dfb8653e34d02/config.json",
-    "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/322c3b29492673eb7d0b434bfa9dfb8653e34d02/v3_e2e_ctc.onnx",
-    "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/322c3b29492673eb7d0b434bfa9dfb8653e34d02/v3_e2e_ctc_vocab.txt",
+    "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/322c3b29492673eb7d0b434bfa9dfb8653e34d02/v3_rnnt_encoder.onnx",
+    "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/322c3b29492673eb7d0b434bfa9dfb8653e34d02/v3_rnnt_decoder.onnx",
+    "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/322c3b29492673eb7d0b434bfa9dfb8653e34d02/v3_rnnt_joint.onnx",
+    "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/322c3b29492673eb7d0b434bfa9dfb8653e34d02/v3_vocab.txt",
     "https://huggingface.co/istupakov/silero-vad-onnx/resolve/b3e3ee3cce4c11ceb63b1a0b229d916069c1ddf6/silero_vad.onnx",
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34.onnx",
-    "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip",
-    $cleanerModelUri,
-    $cleanerRuntimeUri
+    "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip"
 )
-$publishedCleanerModel = $false
-$publishedCleanerRuntime = $false
 $installationCompleted = $false
 
 try {
@@ -228,6 +156,7 @@ try {
     $asrDestination = Join-Path $modelsRoot $asrDirectoryName
     if (Test-Path -LiteralPath $asrDestination) {
         Assert-FileSet $asrDestination $asrFiles
+        Assert-FileSizes $asrDestination $asrFileSizes
     }
     else {
         foreach ($name in $asrFiles.Keys) {
@@ -236,6 +165,7 @@ try {
             ) (Join-Path $stagedAsr $name) $asrFiles[$name]
         }
         Publish-ModelDirectory $stagedAsr $asrDestination $asrFiles
+        Assert-FileSizes $asrDestination $asrFileSizes
     }
 
     $stagedVad = Join-Path $stagingRoot "vad"
@@ -276,36 +206,6 @@ try {
         Publish-ModelDirectory $stagedVoice $voiceDestination $voiceFiles
     }
 
-    $stagedCleanerModel = Join-Path $stagingRoot "cleaner-model"
-    $cleanerModelDestination = Join-Path $modelsRoot $cleanerModelDirectoryName
-    $cleanerModelPath = Join-Path $cleanerModelDestination $cleanerModelFileName
-    if (Test-Path -LiteralPath $cleanerModelDestination) {
-        Assert-FileHash $cleanerModelPath $cleanerModelSha256
-        Assert-FileSize $cleanerModelPath $cleanerModelSize
-    }
-    else {
-        $stagedCleanerModelPath = Join-Path $stagedCleanerModel $cleanerModelFileName
-        Get-OrDownload $cleanerModelUri $stagedCleanerModelPath $cleanerModelSha256
-        Assert-FileSize $stagedCleanerModelPath $cleanerModelSize
-        Publish-ModelDirectory $stagedCleanerModel $cleanerModelDestination ([ordered]@{
-            $cleanerModelFileName = $cleanerModelSha256
-        })
-        $publishedCleanerModel = $true
-        Assert-FileSize $cleanerModelPath $cleanerModelSize
-    }
-
-    $cleanerRuntimeDirectory = Join-Path $toolsRoot $cleanerRuntimeDirectoryName
-    $cleanerRuntimeArchive = Join-Path $stagingRoot $cleanerRuntimeArchiveName
-    if (-not (Test-Path -LiteralPath $cleanerRuntimeDirectory)) {
-        Get-OrDownload $cleanerRuntimeUri $cleanerRuntimeArchive $cleanerRuntimeArchiveSha256
-    }
-    $cleanerRuntimeInstallation = Install-CleanerRuntime `
-        -ArchivePath $cleanerRuntimeArchive `
-        -DestinationDirectory $cleanerRuntimeDirectory `
-        -StagingDirectory (Join-Path $stagingRoot "cleaner-runtime")
-    $cleanerLlamaServerPath = $cleanerRuntimeInstallation.Path
-    $publishedCleanerRuntime = $cleanerRuntimeInstallation.Published
-
     $ffmpegDirectory = Join-Path $toolsRoot $ffmpegDirectoryName
     $ffmpegExecutable = Join-Path $ffmpegDirectory "bin\ffmpeg.exe"
     if (-not (Test-Path -LiteralPath $ffmpegExecutable -PathType Leaf)) {
@@ -337,8 +237,8 @@ try {
         schema_version = 1
         language = "ru"
         asr = [ordered]@{
-            pack_id = "gigaam-v3-e2e-ctc-322c3b29"
-            model_name = "gigaam-v3-e2e-ctc"
+            pack_id = "gigaam-v3-rnnt-322c3b29"
+            model_name = "gigaam-v3-rnnt"
             directory = $asrDirectoryName
             files = $asrFiles
         }
@@ -370,17 +270,13 @@ try {
         ModelsRoot = $modelsRoot
         ManifestPath = $manifestPath
         FfmpegPath = $ffmpegExecutable
-        CleanerModelPath = $cleanerModelPath
-        CleanerLlamaServerPath = $cleanerLlamaServerPath
+        # Поля сохранены для обратной совместимости install-windows.ps1.
+        # Штатная установка намеренно не скачивает и не запускает LLM cleaner.
+        CleanerModelPath = ""
+        CleanerLlamaServerPath = ""
     }
 }
 finally {
-    if (-not $installationCompleted -and $publishedCleanerRuntime -and (Test-Path -LiteralPath $cleanerRuntimeDirectory)) {
-        Remove-Item -LiteralPath $cleanerRuntimeDirectory -Recurse -Force
-    }
-    if (-not $installationCompleted -and $publishedCleanerModel -and (Test-Path -LiteralPath $cleanerModelDestination)) {
-        Remove-Item -LiteralPath $cleanerModelDestination -Recurse -Force
-    }
     if (Test-Path -LiteralPath $stagingRoot) {
         Remove-Item -LiteralPath $stagingRoot -Recurse -Force
     }

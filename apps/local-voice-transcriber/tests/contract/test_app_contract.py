@@ -46,7 +46,7 @@ def test_readiness_and_admin_overview_follow_live_worker_state(
         dispatcher = OneWorkerDispatcher(
             repository, _NoopProcessor(), worker_id="test-worker", poll_seconds=0.01
         )
-        return dispatcher, "verified-pack", None, None, None, None, None
+        return dispatcher, "verified-pack", None, None, None, None, None, {}
 
     monkeypatch.setattr(api_module, "_configure_asr_worker", configured_worker)
 
@@ -203,6 +203,9 @@ def test_static_index_is_public_without_api_secrets(client: TestClient) -> None:
     assert 'data-view="profiles"' not in response.text
     assert 'id="profiles-view"' not in response.text
     assert 'id="download-text-button"' in response.text
+    assert 'id="edit-transcript-button" disabled>Редактировать транскрипцию' in response.text
+    assert 'id="cancel-editor-button" class="secondary" hidden>Отменить' in response.text
+    assert 'id="save-editor-button" hidden disabled>Сохранить правки' in response.text
     assert 'id="open-speakers-button"' in response.text
     assert 'id="speakers-dialog"' in response.text
     assert 'id="speaker-timeline-dialog"' in response.text
@@ -239,6 +242,28 @@ def test_static_index_is_public_without_api_secrets(client: TestClient) -> None:
     assert "function renderSpeakerTimeline" in script.text
     assert "function openSpeakerTimeline" in script.text
     assert "function setDraftMode" in script.text
+    assert 'mode: "read"' in script.text
+    assert 'editor.mode === "edit"' in script.text
+    assert 'gap < 0 || gap > 1500' in script.text
+    assert 'turn.groupId !== groupId || turn.separate || separate' in script.text
+    assert (
+        'formatTime(timing.start_ms) + "–" + formatTime(ending?.end_ms ?? timing.end_ms)'
+        in script.text
+    )
+    assert (
+        'const speaker = text("span", groupDisplayLabel(editor, currentTurn.groupId));'
+        in script.text
+    )
+    assert 'if (editor.mode === "edit") {' in script.text
+    assert 'selector.className = "turn-speaker-select"' in script.text
+    assert 'function cancelTranscriptEditor()' in script.text
+    assert 'editor.segmentDrafts.clear();' in script.text
+    assert 'editor.speakerDrafts.clear();' in script.text
+    assert '"/speaker", {' in script.text
+    assert 'method: "PUT"' in script.text
+    assert 'function renderJobDiagnostics(job, run)' in script.text
+    assert '"Готово за " + duration' in script.text
+    assert '"Диагностика обработки"' in script.text
     assert "function syncDraftModeControls" in script.text
     assert '"/transcript/view-preference"' in script.text
     assert '"/transcript?view="' in script.text

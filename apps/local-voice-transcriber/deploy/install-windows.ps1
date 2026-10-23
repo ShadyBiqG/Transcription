@@ -178,6 +178,11 @@ if ($dataRoot.TrimEnd('\') -eq [System.IO.Path]::GetPathRoot($dataRoot).TrimEnd(
     $appRoot.StartsWith($dataRoot.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
     throw "DataPath must be a separate candidate directory, outside the application directory and volume root."
 }
+$cleanerDisabler = Join-Path $PSScriptRoot "disable-windows-cleaner-service.ps1"
+if (-not (Test-Path -LiteralPath $cleanerDisabler -PathType Leaf)) {
+    throw "The local cleaner disabler was not found: $cleanerDisabler"
+}
+& $cleanerDisabler -EnvironmentFile (Join-Path $dataRoot "candidate.env.ps1")
 $candidateService = Get-Service -Name "TranscriptionNextCandidateService" -ErrorAction SilentlyContinue
 if ($null -ne $candidateService -and $candidateService.Status -ne "Stopped") {
     Write-Host "Stopping the candidate service before replacing its virtual environment..."
@@ -281,7 +286,7 @@ $modelInstaller = Join-Path $PSScriptRoot "install-default-model-packs.ps1"
 if (-not (Test-Path -LiteralPath $modelInstaller -PathType Leaf)) {
     throw "The default model installer was not found: $modelInstaller"
 }
-Write-Host "Installing verified local ASR, VAD, voice, cleaner, and FFmpeg packs..."
+Write-Host "Installing verified local ASR, VAD, voice, and FFmpeg packs..."
 $previousProjectEnvironment = $env:UV_PROJECT_ENVIRONMENT
 try {
     $env:UV_PROJECT_ENVIRONMENT = $virtualEnvironmentPath
@@ -333,8 +338,7 @@ else {
     Ensure-EnvironmentValue $environmentFile "NEXT_FFMPEG_PATH" $modelInstallation.FfmpegPath
     Ensure-EnvironmentValue $environmentFile "NEXT_CLEANER_MODEL_PATH" $modelInstallation.CleanerModelPath
     Ensure-EnvironmentValue $environmentFile "NEXT_CLEANER_LLAMA_SERVER_PATH" $modelInstallation.CleanerLlamaServerPath
-    # Служба очистителя переустанавливается после этого скрипта. До её
-    # loopback health-проверки приложение использует безопасный rule-based fallback.
+    # Локальный LLM-очиститель отключён по умолчанию, чтобы не конкурировать с ASR.
     Ensure-EnvironmentValue $environmentFile "NEXT_CLEANER_ENDPOINT" "http://127.0.0.1:8020"
     Ensure-EnvironmentValue $environmentFile "NEXT_CLEANER_ENABLED" "false"
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import wave
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,16 @@ class FakeNormalizer:
         assert source.is_file()
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(b"RIFF")
+
+
+class ValidWavNormalizer:
+    def normalize(self, source: Path, destination: Path) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(destination), "wb") as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(16_000)
+            audio.writeframes(b"\x00\x00" * 16_000)
 
 
 class FakeAsr:
@@ -214,6 +225,31 @@ def test_pipeline_passes_safe_voice_match_to_publisher_after_diarization(tmp_pat
 
     assert matcher.paths == [jobs_root / job.id / "runs" / run.id / "normalized.wav"]
     assert publisher.voice_matches[0].profile_id == "profile-alex"
+
+
+def test_pipeline_records_measured_audio_duration_and_stage_events(tmp_path: Path) -> None:
+    repository, jobs_root, job, run = claimed_run(tmp_path)
+    processor = AsrJobProcessor(
+        repository,
+        ValidWavNormalizer(),
+        FakeAsr(),
+        jobs_root=jobs_root,
+        publisher=FakePublisher(repository),
+        diarizer=FakeDiarizer(),
+        voice_matcher=FakeVoiceMatcher(),
+    )
+
+    asyncio.run(processor.process(job, run, lambda: False))
+    repository.mark_ready(run_id=run.id, worker_id="worker")
+    data = repository.get_run(run.id).diagnostics_data
+    assert data is not None
+    assert data["audio_duration_ms"] == 1_000
+    assert data["stages"]["publishing"]["local_speaker_group_count"] == 1
+    events = data["stage_events"]
+    assert [event["stage"] for event in events] == [
+        "extracting_audio", "asr", "diarizing", "matching", "publishing"
+    ]
+    assert all(event["completed_at"] is not None for event in events)
 
 
 def test_ffmpeg_normalizer_rejects_media_outside_candidate_jobs_root(tmp_path: Path) -> None:

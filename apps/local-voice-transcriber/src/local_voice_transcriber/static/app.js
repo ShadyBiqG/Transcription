@@ -105,7 +105,7 @@
     player.pause();
     player.removeAttribute("src");
     player.load();
-    byId("editor-title").textContent = "Редактор";
+    byId("editor-title").textContent = "Транскрипция";
     byId("editor-status").textContent = "Выберите готовую запись";
     byId("editor-help").textContent = "Выберите готовую запись.";
     byId("subtitle-line").textContent = "Субтитры появятся после обработки.";
@@ -113,6 +113,12 @@
     byId("audio-help").textContent = "";
     document.querySelector(".waveform span").style.width = "0%";
     byId("save-editor-button").disabled = true;
+    byId("edit-transcript-button").disabled = true;
+    byId("edit-transcript-button").hidden = false;
+    byId("cancel-editor-button").hidden = true;
+    byId("save-editor-button").hidden = true;
+    byId("draft-mode-switch").hidden = false;
+    byId("transcript-title").textContent = "Транскрипция";
     byId("download-text-button").hidden = true;
     byId("editor-conflict").hidden = true;
     byId("speaker-panel").replaceChildren();
@@ -321,13 +327,18 @@
   }
 
   function editorChanges(editor = state.editor) {
-    if (!editor?.revision) return { segmentTexts: {}, groupUpdates: {} };
+    if (!editor?.revision) return { segmentTexts: {}, groupUpdates: {}, speakerUpdates: {} };
     const segmentTexts = {};
+    const speakerUpdates = {};
     editor.revision.segments.forEach((segment) => {
       const draft = editor.segmentDrafts.get(segment.source_segment_id);
       if (draft !== undefined && draft !== segment.text) segmentTexts[segment.source_segment_id] = draft;
+      const speakerDraft = editor.speakerDrafts.get(segment.source_segment_id);
+      if (speakerDraft !== undefined && speakerDraft !== effectiveGroupId(editor, segment)) {
+        speakerUpdates[segment.source_segment_id] = speakerDraft;
+      }
     });
-    return { segmentTexts, groupUpdates: {} };
+    return { segmentTexts, groupUpdates: {}, speakerUpdates };
   }
 
   function hasIdentityDrafts(editor = state.editor) {
@@ -341,7 +352,46 @@
   function hasEditorChanges(editor = state.editor) {
     const changes = editorChanges(editor);
     return Boolean(Object.keys(changes.segmentTexts).length || Object.keys(changes.groupUpdates).length ||
+      Object.keys(changes.speakerUpdates).length ||
       hasIdentityDrafts(editor));
+  }
+
+  function setTranscriptMode(editor, mode) {
+    if (state.editor !== editor) return;
+    editor.mode = mode;
+    byId("edit-transcript-button").hidden = mode === "edit";
+    byId("cancel-editor-button").hidden = mode !== "edit";
+    byId("save-editor-button").hidden = mode !== "edit";
+    byId("draft-mode-switch").hidden = mode === "edit";
+    byId("download-text-button").hidden = mode === "edit" || !editor.revision;
+    byId("transcript-title").textContent = mode === "edit" ? "Редактирование транскрипции" : "Транскрипция";
+    byId("editor-help").textContent = mode === "edit"
+      ? "Измените текст и спикера нужной реплики, затем сохраните правки. Отмена вернёт к просмотру."
+      : "Ревизия " + editor.revision.revision.number + ". Нажмите таймкод, чтобы прослушать фрагмент.";
+    renderTranscript();
+  }
+
+  async function enterTranscriptEditor() {
+    const editor = state.editor;
+    if (!editor?.revision || editor.saving || editor.loading) return;
+    if (editor.draftMode === "raw") {
+      await setDraftMode("clean");
+      if (state.editor !== editor || editor.draftMode === "raw") {
+        notify("Для редактирования нужен чистый черновик. Сейчас доступен только дословный оригинал.", true);
+        return;
+      }
+    }
+    setTranscriptMode(editor, "edit");
+  }
+
+  function cancelTranscriptEditor() {
+    const editor = state.editor;
+    if (!editor || editor.saving) return;
+    editor.segmentDrafts.clear();
+    editor.speakerDrafts.clear();
+    editor.identityDrafts.clear();
+    byId("editor-conflict").hidden = true;
+    setTranscriptMode(editor, "read");
   }
 
   function setEditorBusy(editor, busy) {
@@ -366,6 +416,51 @@
       (stage && ["queued", "processing"].includes(job.status) ? " · " + (stageLabels[stage] || stage) : "");
   }
 
+  function formatDuration(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0) return null;
+    const rounded = Math.round(seconds);
+    return Math.floor(rounded / 60) + " мин " + rounded % 60 + " с";
+  }
+
+  function completedRunDuration(job, run) {
+    const diagnostics = job.diagnostics || run?.diagnostics;
+    if (Number.isFinite(diagnostics?.total_duration_seconds)) return diagnostics.total_duration_seconds;
+    const started = Date.parse(run?.started_at || "");
+    const completed = Date.parse(run?.completed_at || "");
+    return Number.isFinite(started) && Number.isFinite(completed) && completed >= started
+      ? (completed - started) / 1000 : null;
+  }
+
+  function renderJobDiagnostics(job, run) {
+    const diagnostics = job.diagnostics || run?.diagnostics;
+    if (!diagnostics || typeof diagnostics !== "object") return null;
+    const panel = document.createElement("details");
+    panel.className = "job-diagnostics";
+    panel.append(text("summary", "Диагностика обработки"));
+    const content = document.createElement("dl");
+    const add = (label, value) => {
+      if (value === null || value === undefined || value === "") return;
+      content.append(text("dt", label), text("dd", String(value)));
+    };
+    add("Модель ASR", diagnostics.asr_model);
+    add("Пакет ASR", diagnostics.asr_pack_id);
+    add("Пакет VAD", diagnostics.vad_pack_id);
+    add("Пакет голосов", diagnostics.voice_pack_id);
+    add("Длительность записи", formatDuration(diagnostics.audio_duration_seconds));
+    add("Ожидание в очереди", formatDuration(diagnostics.queue_duration_seconds));
+    add("Время обработки", formatDuration(completedRunDuration(job, run)));
+    add("Попытка", diagnostics.attempt);
+    add("Повторных попыток", diagnostics.retry_count);
+    add("Групп спикеров", diagnostics.local_speaker_group_count);
+    if (Array.isArray(diagnostics.stages)) diagnostics.stages.forEach((stage) => {
+      const label = stageLabels[stage.stage];
+      if (label) add(label, formatDuration(stage.duration_seconds) || "Выполняется");
+    });
+    if (!content.children.length) add("Сведения", "Дополнительные сведения пока недоступны.");
+    panel.append(content);
+    return panel;
+  }
+
   function renderJobs(items) {
     const list = byId("jobs-list");
     list.replaceChildren();
@@ -384,7 +479,7 @@
       const openFromCard = () => openJob(job).catch(showError);
       detail.tabIndex = 0;
       detail.setAttribute("role", "button");
-      detail.setAttribute("aria-label", "Открыть запись «" + job.source_name + "» в редакторе");
+      detail.setAttribute("aria-label", "Открыть запись «" + job.source_name + "» для просмотра");
       detail.addEventListener("click", openFromCard);
       detail.addEventListener("keydown", (event) => {
         if (!["Enter", " "].includes(event.key)) return;
@@ -395,8 +490,13 @@
       status.className = "status-" + job.status;
       detail.append(text("strong", job.source_name), status);
       const run = job.current_run || job.runs?.find((item) => item.id === job.current_run_id);
-      if (run?.stage) detail.append(text("small", "Этап: " + (stageLabels[run.stage] || run.stage)));
-      if (run?.attempt && run?.max_attempts) {
+      if (job.status === "ready") {
+        const duration = formatDuration(completedRunDuration(job, run));
+        if (duration) detail.append(text("small", "Готово за " + duration));
+      } else if (run?.stage) {
+        detail.append(text("small", "Этап: " + (stageLabels[run.stage] || run.stage)));
+      }
+      if (job.status !== "ready" && run?.attempt && run?.max_attempts) {
         detail.append(text("small", "Попытка " + run.attempt + " из " + run.max_attempts));
       }
       if (run?.error_code) detail.append(text("small", "Ошибка: " + run.error_code));
@@ -417,7 +517,7 @@
       menuToggle.textContent = "⋮";
       const menuPanel = document.createElement("div");
       menuPanel.className = "job-overflow-panel";
-      const open = text("button", "Открыть в редакторе");
+      const open = text("button", "Открыть транскрипцию");
       open.type = "button";
       open.className = "menu-item";
       open.addEventListener("click", () => {
@@ -447,6 +547,8 @@
       menu.append(menuToggle, menuPanel);
       actions.append(menu);
       row.append(icon, detail, actions);
+      const diagnostics = renderJobDiagnostics(job, run);
+      if (diagnostics) row.append(diagnostics);
       list.append(row);
     });
   }
@@ -632,13 +734,6 @@
     });
   }
 
-  function editSegment(editor, segmentId) {
-    if (editor.saving || editor.draftMode !== "clean") return;
-    editor.editingSegmentId = segmentId;
-    renderTranscript();
-    requestAnimationFrame(() => document.querySelector(".transcript-edit")?.focus());
-  }
-
   function effectiveGroupId(editor, segment) {
     let groupId = segment.primary_group_id || segment.speaker_group_ids?.[0] || null;
     const visited = new Set();
@@ -776,9 +871,15 @@
     editor.revision.segments.forEach((segment) => {
       const groupId = effectiveGroupId(editor, segment);
       const separate = segment.requires_review || (segment.speaker_group_ids?.length || 0) > 1;
-      const hiddenByCleaning = editor.draftMode === "clean" && !segmentText(editor, segment).trim() && !separate;
+      const hiddenByCleaning = editor.mode !== "edit" && editor.draftMode === "clean" &&
+        !segmentText(editor, segment).trim() && !separate;
       if (hiddenByCleaning) return;
-      if (!turn || turn.groupId !== groupId || turn.separate || separate) {
+      const timing = editor.timingBySegment.get(segment.source_segment_id);
+      const previous = turn?.segments.at(-1);
+      const previousTiming = previous && editor.timingBySegment.get(previous.source_segment_id);
+      const gap = timing && previousTiming ? timing.start_ms - previousTiming.end_ms : Infinity;
+      if (editor.mode === "edit" || !turn || turn.groupId !== groupId || turn.separate || separate ||
+          gap < 0 || gap > 1500) {
         turn = { groupId, separate, segments: [] };
         turns.push(turn);
       }
@@ -787,12 +888,17 @@
     turns.forEach((currentTurn) => {
       const first = currentTurn.segments[0];
       const timing = editor.timingBySegment.get(first.source_segment_id);
+      const last = currentTurn.segments.at(-1);
+      const ending = editor.timingBySegment.get(last.source_segment_id);
       const row = document.createElement("article");
       row.className = "transcript-turn";
       row.dataset.groupId = currentTurn.groupId || "";
       if (currentTurn.separate) row.classList.add("requires-review");
       if (byId("speakers-dialog").open && editor.selectedGroupId === currentTurn.groupId) row.classList.add("speaker-selected");
-      const seekButton = text("button", timing ? formatTime(timing.start_ms) : "—");
+      const timeLabel = timing
+        ? formatTime(timing.start_ms) + "–" + formatTime(ending?.end_ms ?? timing.end_ms)
+        : "—";
+      const seekButton = text("button", timeLabel);
       seekButton.type = "button";
       seekButton.className = "timestamp";
       seekButton.disabled = !timing;
@@ -804,11 +910,30 @@
       }
       const body = document.createElement("div");
       body.className = "transcript-body";
-      const speaker = text("button", groupDisplayLabel(editor, currentTurn.groupId));
-      speaker.type = "button";
-      speaker.className = "turn-speaker";
-      speaker.addEventListener("click", () => openSpeakers(editor, currentTurn.groupId));
-      body.append(speaker);
+      if (editor.mode === "edit") {
+        const segment = first;
+        const speakerField = document.createElement("label");
+        speakerField.className = "turn-speaker-field";
+        speakerField.append(text("span", "Спикер"));
+        const selector = document.createElement("select");
+        selector.className = "turn-speaker-select";
+        selector.setAttribute("aria-label", "Спикер реплики " + (timing ? formatTime(timing.start_ms) : "без таймкода"));
+        visibleGroups(editor).forEach((group) => {
+          const option = text("option", groupDisplayLabel(editor, group.speaker_group_id));
+          option.value = group.speaker_group_id;
+          selector.append(option);
+        });
+        selector.value = editor.speakerDrafts.get(segment.source_segment_id) ?? currentTurn.groupId ?? "";
+        selector.addEventListener("change", () => {
+          editor.speakerDrafts.set(segment.source_segment_id, selector.value);
+        });
+        speakerField.append(selector);
+        body.append(speakerField);
+      } else {
+        const speaker = text("span", groupDisplayLabel(editor, currentTurn.groupId));
+        speaker.className = "turn-speaker";
+        body.append(speaker);
+      }
       if (currentTurn.separate) {
         const badge = text("span", "Одновременная речь — проверить");
         badge.className = "review-badge";
@@ -818,7 +943,7 @@
       paragraph.className = "transcript-text";
       currentTurn.segments.forEach((segment, index) => {
         const draft = segmentText(editor, segment);
-        if (editor.draftMode === "clean" && editor.editingSegmentId === segment.source_segment_id) {
+        if (editor.mode === "edit") {
           const input = document.createElement("textarea");
           input.className = "transcript-edit";
           input.dataset.segmentId = segment.source_segment_id;
@@ -826,38 +951,18 @@
           input.value = draft;
           input.setAttribute("aria-label", "Текст фрагмента");
           input.addEventListener("input", () => { editor.segmentDrafts.set(segment.source_segment_id, input.value); });
-          input.addEventListener("blur", () => {
-            if (editor.editingSegmentId === segment.source_segment_id) {
-              editor.editingSegmentId = null;
-              renderTranscript();
-            }
-          });
           paragraph.append(input);
         } else {
           const content = text("span", draft);
           content.className = "transcript-segment";
           content.dataset.segmentId = segment.source_segment_id;
-          content.tabIndex = 0;
-          content.setAttribute("role", "button");
-          content.setAttribute("aria-label", editor.draftMode === "clean" ? "Изменить фрагмент" : "Исходный фрагмент ASR");
-          if (editor.draftMode === "clean") {
-            content.addEventListener("click", () => editSegment(editor, segment.source_segment_id));
-            content.addEventListener("keydown", (event) => {
-              if (!["Enter", " "].includes(event.key)) return;
-              event.preventDefault();
-              editSegment(editor, segment.source_segment_id);
-            });
-          } else {
-            content.removeAttribute("role");
-            content.removeAttribute("tabindex");
-            content.classList.add("source-segment");
-          }
+          if (editor.draftMode === "raw") content.classList.add("source-segment");
           paragraph.append(content);
           if (index < currentTurn.segments.length - 1) paragraph.append(document.createTextNode(" "));
         }
       });
       body.append(paragraph);
-      const suggestions = editor.draftMode === "clean" ? currentTurn.segments.flatMap((segment) =>
+      const suggestions = editor.mode === "edit" && editor.draftMode === "clean" ? currentTurn.segments.flatMap((segment) =>
         (editor.suggestions || []).filter((item) => item.source_segment_id === segment.source_segment_id)
       ) : [];
       if (suggestions.length) {
@@ -1272,9 +1377,10 @@
       renderSpeakerPanel();
       renderTranscript();
       byId("save-editor-button").disabled = !transcript;
+      byId("edit-transcript-button").disabled = !transcript;
       byId("download-text-button").hidden = !transcript;
       byId("editor-help").textContent = transcript
-        ? "Ревизия " + transcript.revision.number + ". Правки сохраняются новой ревизией; отмеченные наложения требуют проверки."
+        ? "Ревизия " + transcript.revision.number + ". Нажмите таймкод, чтобы прослушать фрагмент."
         : unavailable || "Дождитесь публикации результата обработки.";
     } catch (error) {
       if (error instanceof StaleSessionError || state.editor !== editor) return;
@@ -1304,7 +1410,7 @@
     clearEditor();
     const editor = {
       jobId: job.id, job, revision: null, timingBySegment: new Map(),
-      rawTextBySegment: new Map(), groupById: new Map(), decisions: new Map(), suggestions: [], segmentDrafts: new Map(), identityDrafts: new Map(), editingSegmentId: null,
+      rawTextBySegment: new Map(), groupById: new Map(), decisions: new Map(), suggestions: [], segmentDrafts: new Map(), speakerDrafts: new Map(), identityDrafts: new Map(), mode: "read",
       draftMode: "clean", selectedGroupId: null, timelineGroupId: null,
       unavailable: "", loading: false, saving: false,
     };
@@ -1318,9 +1424,9 @@
 
   async function saveEditor() {
     const editor = state.editor;
-    if (!editor?.revision || editor.saving || byId("save-editor-button").disabled) return;
-    const { segmentTexts, groupUpdates } = editorChanges(editor);
-    if (!Object.keys(segmentTexts).length && !Object.keys(groupUpdates).length) {
+    if (!editor?.revision || editor.mode !== "edit" || editor.saving || byId("save-editor-button").disabled) return;
+    const { segmentTexts, groupUpdates, speakerUpdates } = editorChanges(editor);
+    if (!Object.keys(segmentTexts).length && !Object.keys(groupUpdates).length && !Object.keys(speakerUpdates).length) {
       notify(hasIdentityDrafts(editor)
         ? "Сохраните имя спикера в соответствующей строке."
         : "Нет изменений для сохранения.");
@@ -1328,23 +1434,36 @@
     }
     setEditorBusy(editor, true);
     try {
-      const result = await request("/jobs/" + editor.jobId + "/transcript", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          expected_revision_number: editor.revision.revision.number,
-          segment_texts: segmentTexts,
-          group_updates: groupUpdates,
-        }),
-      });
-      if (state.editor !== editor) return;
-      applyEditorRevision(editor, result);
+      let result = editor.revision;
+      if (Object.keys(segmentTexts).length || Object.keys(groupUpdates).length) {
+        result = await request("/jobs/" + encodeURIComponent(editor.jobId) + "/transcript", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            expected_revision_number: result.revision.number,
+            segment_texts: segmentTexts,
+            group_updates: groupUpdates,
+          }),
+        });
+        if (state.editor !== editor) return;
+        applyEditorRevision(editor, result);
+      }
+      for (const [segmentId, groupId] of Object.entries(speakerUpdates)) {
+        result = await request("/jobs/" + encodeURIComponent(editor.jobId) + "/transcript/segments/" +
+          encodeURIComponent(segmentId) + "/speaker", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ speaker_group_id: groupId, expected_revision_number: result.revision.number }),
+        });
+        if (state.editor !== editor) return;
+        applyEditorRevision(editor, result);
+      }
       editor.suggestions = [];
       editor.segmentDrafts.clear();
-      editor.editingSegmentId = null;
+      editor.speakerDrafts.clear();
       byId("editor-conflict").hidden = true;
       renderSpeakerPanel();
-      renderTranscript();
+      setTranscriptMode(editor, "read");
       notify("Правки сохранены как ревизия " + result.revision.number + ".");
     } catch (error) {
       if (state.editor === editor && error.status === 409) {
@@ -1526,6 +1645,8 @@
   });
 
   byId("save-editor-button").addEventListener("click", saveEditor);
+  byId("edit-transcript-button").addEventListener("click", () => enterTranscriptEditor().catch(showError));
+  byId("cancel-editor-button").addEventListener("click", cancelTranscriptEditor);
   byId("download-text-button").addEventListener("click", downloadTranscriptText);
   byId("open-speakers-button").addEventListener("click", () => openSpeakers());
   byId("close-speakers-button").addEventListener("click", closeSpeakers);
@@ -1553,7 +1674,11 @@
     const editor = state.editor;
     if (!editor?.revision) return;
     const lines = editor.revision.segments.map((segment) => {
-      return editor.segmentDrafts.get(segment.source_segment_id) ?? segment.text;
+      const groupId = editor.speakerDrafts.get(segment.source_segment_id) ?? effectiveGroupId(editor, segment);
+      const timing = editor.timingBySegment.get(segment.source_segment_id);
+      const timestamp = timing ? formatTime(timing.start_ms) + " · " : "";
+      return timestamp + groupDisplayLabel(editor, groupId) + ": " +
+        (editor.segmentDrafts.get(segment.source_segment_id) ?? segment.text);
     });
     const groups = visibleGroups(editor).map((group) =>
       editor.identityDrafts.get(group.speaker_group_id) ?? group.label

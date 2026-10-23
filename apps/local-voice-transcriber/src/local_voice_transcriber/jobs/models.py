@@ -59,3 +59,4 @@ class JobRun:
     created_at: str
     started_at: str | None
     completed_at: str | None
+    diagnostics_data: dict[str, object] | None = None

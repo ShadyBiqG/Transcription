@@ -470,6 +470,7 @@ def test_job_list_uses_private_stable_cursor_and_safe_current_run(
     assert len(first_payload["items"]) == 20
     assert first_payload["next_cursor"]
     current_run = first_payload["items"][0]["current_run"]
+    diagnostics = current_run.pop("diagnostics")
     assert current_run == {
         "id": run.id,
         "status": "queued",
@@ -482,8 +483,25 @@ def test_job_list_uses_private_stable_cursor_and_safe_current_run(
         "started_at": None,
         "completed_at": None,
     }
+    assert diagnostics == {
+        "status": "queued",
+        "current_stage": None,
+        "reason_code": None,
+        "reason": None,
+        "attempt": 0,
+        "max_attempts": 3,
+        "retry_count": 0,
+        "audio_duration_seconds": None,
+        "queue_duration_seconds": None,
+        "total_duration_seconds": None,
+        "stages": [],
+        "asr_model": None,
+        "asr_pack_id": "fake-pack",
+        "vad_pack_id": None,
+        "voice_pack_id": None,
+        "local_speaker_group_count": None,
+    }
     assert "/private/" not in first.text
-    assert "fake-pack" not in first.text
 
     repository.create_job(
         job_id="newest", owner_id=owner_id, source_name="Новая.webm", source_path="/private/new"
@@ -516,6 +534,68 @@ def test_job_list_rejects_invalid_pagination(
     assert response.status_code == 422
 
 
+def test_run_diagnostics_are_owner_scoped_and_redact_untrusted_pack_values(
+    logged_in_client: TestClient,
+) -> None:
+    client = logged_in_client
+    job_id = _create_job(client)
+    repository = client.app.state.jobs_repository
+    run = repository.create_run(
+        run_id="diagnostic-run",
+        job_id=job_id,
+        request_id="diagnostic-request",
+        asr_pack_id="C:/private/secret",
+        voice_pack_id="voice-pack-1",
+        diagnostics_packs={
+            "asr_model": "gigaam-v3",
+            "vad_pack_id": "vad-1",
+            "asr_pack_id": "C:/private/secret",
+        },
+    )
+    claimed = repository.claim_next_run(worker_id="worker", lease_seconds=30)
+    assert claimed is not None
+    repository.stage_manifest(
+        run_id=run.id,
+        worker_id="worker",
+        stage="asr",
+        manifest={"input": "private/normalized.wav"},
+    )
+    repository.record_audio_duration(run_id=run.id, worker_id="worker", duration_ms=62_500)
+    repository.stage_manifest(
+        run_id=run.id,
+        worker_id="worker",
+        stage="publishing",
+        manifest={"local_speaker_group_count": 2, "secret": "private/path"},
+    )
+    repository.mark_ready(run_id=run.id, worker_id="worker")
+
+    detail = client.get(f"/api/v1/jobs/{job_id}")
+    assert detail.status_code == 200
+    diagnostics = detail.json()["job"]["runs"][0]["diagnostics"]
+    assert diagnostics["status"] == "ready"
+    assert diagnostics["current_stage"] is None
+    assert diagnostics["total_duration_seconds"] >= 0
+    assert diagnostics["audio_duration_seconds"] == 62.5
+    assert diagnostics["local_speaker_group_count"] == 2
+    assert diagnostics["asr_model"] == "gigaam-v3"
+    assert diagnostics["asr_pack_id"] is None
+    assert diagnostics["vad_pack_id"] == "vad-1"
+    assert diagnostics["voice_pack_id"] == "voice-pack-1"
+    assert [event["stage"] for event in diagnostics["stages"]] == [
+        "extracting_audio", "asr", "publishing"
+    ]
+    assert all(event["completed_at"] is not None for event in diagnostics["stages"])
+    assert "private/path" not in detail.text
+    assert "C:/private/secret" not in detail.text
+
+    other = TestClient(client.app)
+    with other:
+        register(other, "diagnostic-other")
+        login(other, "diagnostic-other")
+        assert other.get(f"/api/v1/jobs/{job_id}").status_code == 404
+        assert other.get("/api/v1/jobs").json()["items"] == []
+
+
 def test_run_requires_running_worker_even_with_ready_pack(logged_in_client: TestClient) -> None:
     client = logged_in_client
     job_id = _create_job(client)
@@ -539,12 +619,19 @@ def test_active_run_rejects_new_key_and_retries_same_key(
     assert client.get(f"/api/v1/jobs/{job_id}").json()["job"]["status"] == "uploaded"
     client.app.state.asr_ready = True
     client.app.state.asr_pack_id = "local-fake-pack"
+    client.app.state.diagnostic_packs = {
+        "asr_model": "test-model",
+        "asr_pack_id": "local-fake-pack",
+        "vad_pack_id": "local-vad-pack",
+        "voice_pack_id": None,
+    }
     client.app.state.dispatcher_status = lambda: "running"
     endpoint = f"/api/v1/jobs/{job_id}/runs"
     first_headers = {**_headers(client), "Idempotency-Key": "first-request"}
 
     first = client.post(endpoint, headers=first_headers)
     assert first.status_code == 202
+    assert first.json()["run"]["diagnostics"]["vad_pack_id"] == "local-vad-pack"
     run_id = first.json()["run"]["id"]
     repository = client.app.state.jobs_repository
     if processing:

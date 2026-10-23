@@ -223,6 +223,7 @@ class JobRepository:
         asr_pack_id: str,
         voice_pack_id: str | None = None,
         max_attempts: int = 3,
+        diagnostics_packs: dict[str, str | None] | None = None,
     ) -> JobRun:
         if max_attempts < 1:
             raise ValueError("max_attempts должен быть положительным")
@@ -249,8 +250,8 @@ class JobRepository:
                 """
                 INSERT INTO next_job_runs(
                     id, job_id, request_id, asr_pack_id, voice_pack_id, status, max_attempts,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at, stage_manifest_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -261,6 +262,7 @@ class JobRepository:
                     JobStatus.QUEUED,
                     max_attempts,
                     now,
+                    json.dumps({"packs": diagnostics_packs or {}}, sort_keys=True),
                 ),
             )
             connection.execute(
@@ -365,7 +367,7 @@ class JobRepository:
                 UPDATE next_job_runs
                 SET status = ?, stage = ?, attempt = attempt + 1, lease_owner = ?,
                     lease_expires_at = ?, heartbeat_at = ?, started_at = COALESCE(started_at, ?),
-                    error_code = NULL, error_message = NULL
+                    error_code = NULL, error_message = NULL, stage_manifest_json = ?
                 WHERE id = ? AND status = ? AND cancel_requested = 0
                 """,
                 (
@@ -375,6 +377,7 @@ class JobRepository:
                     expires_at,
                     now_text,
                     now_text,
+                    _start_stage_attempt(row, now_text),
                     row["id"],
                     JobStatus.QUEUED,
                 ),
@@ -426,11 +429,44 @@ class JobRepository:
             ).fetchone()
             if row is None:
                 raise InvalidRunState("Worker не владеет запуском")
-            stages = json.loads(row["stage_manifest_json"]).get("stages", {})
+            data = json.loads(row["stage_manifest_json"])
+            stages = data.setdefault("stages", {})
             stages[str(stage)] = manifest
+            events = data.setdefault("stage_events", [])
+            if not events or events[-1]["stage"] != str(stage) or events[-1]["completed_at"]:
+                now = _utc_now()
+                if events and events[-1]["completed_at"] is None:
+                    events[-1]["completed_at"] = now
+                attempt_row = connection.execute(
+                    "SELECT attempt FROM next_job_runs WHERE id = ?", (run_id,)
+                ).fetchone()
+                events.append({
+                    "attempt": int(attempt_row["attempt"]),
+                    "stage": str(stage),
+                    "started_at": now,
+                    "completed_at": None,
+                })
             connection.execute(
                 "UPDATE next_job_runs SET stage = ?, stage_manifest_json = ? WHERE id = ?",
-                (stage, json.dumps({"stages": stages}, sort_keys=True), run_id),
+                (stage, json.dumps(data, sort_keys=True), run_id),
+            )
+
+    def record_audio_duration(self, *, run_id: str, worker_id: str, duration_ms: int) -> None:
+        """Сохраняет длительность только после проверки нормализованного PCM WAV."""
+
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT stage_manifest_json FROM next_job_runs "
+                "WHERE id = ? AND status = ? AND lease_owner = ?",
+                (run_id, JobStatus.PROCESSING, worker_id),
+            ).fetchone()
+            if row is None:
+                raise InvalidRunState("Worker не владеет запуском")
+            data = json.loads(row["stage_manifest_json"])
+            data["audio_duration_ms"] = duration_ms
+            connection.execute(
+                "UPDATE next_job_runs SET stage_manifest_json = ? WHERE id = ?",
+                (json.dumps(data, sort_keys=True), run_id),
             )
 
     def cancel_requested(self, run_id: str) -> bool:
@@ -515,7 +551,7 @@ class JobRepository:
         now = _utc_now()
         with self._transaction() as connection:
             row = connection.execute(
-                "SELECT job_id FROM next_job_runs WHERE id = ?", (run_id,)
+                "SELECT job_id, stage_manifest_json FROM next_job_runs WHERE id = ?", (run_id,)
             ).fetchone()
             if row is None:
                 raise KeyError("Запуск задания не найден")
@@ -523,10 +559,12 @@ class JobRepository:
                 """
                 UPDATE next_job_runs
                 SET status = ?, lease_owner = NULL, lease_expires_at = NULL, completed_at = ?,
-                    error_code = ?, error_message = ?
+                    error_code = ?, error_message = ?, stage_manifest_json = ?
                 WHERE id = ? AND status = ? AND lease_owner = ?
                 """,
-                (status, now, error_code, error_message, run_id, JobStatus.PROCESSING, worker_id),
+                (status, now, error_code, error_message,
+                 _close_stage_event(row["stage_manifest_json"], now),
+                 run_id, JobStatus.PROCESSING, worker_id),
             ).rowcount
             if updated != 1:
                 raise InvalidRunState("Запуск нельзя завершить этим worker")
@@ -542,7 +580,7 @@ class JobRepository:
         with self._transaction() as connection:
             rows = connection.execute(
                 """
-                SELECT id, job_id FROM next_job_runs
+                SELECT id, job_id, stage_manifest_json FROM next_job_runs
                 WHERE status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at < ?
                 """,
                 (JobStatus.PROCESSING, now_text),
@@ -551,12 +589,14 @@ class JobRepository:
                 connection.execute(
                     """
                     UPDATE next_job_runs
-                    SET status = ?, lease_owner = NULL, lease_expires_at = NULL, error_code = ?
+                    SET status = ?, lease_owner = NULL, lease_expires_at = NULL, error_code = ?,
+                        stage_manifest_json = ?
                     WHERE id = ? AND status = ?
                     """,
                     (
                         JobStatus.STALLED,
                         "worker_heartbeat_expired",
+                        _close_stage_event(row["stage_manifest_json"], now_text),
                         row["id"],
                         JobStatus.PROCESSING,
                     ),
@@ -739,7 +779,27 @@ def _to_run(row: sqlite3.Row) -> JobRun:
         created_at=str(row["created_at"]),
         started_at=row["started_at"],
         completed_at=row["completed_at"],
+        diagnostics_data=json.loads(row["stage_manifest_json"]),
     )
+
+
+def _start_stage_attempt(row: sqlite3.Row, now: str) -> str:
+    data = json.loads(row["stage_manifest_json"])
+    data.setdefault("stage_events", []).append({
+        "attempt": int(row["attempt"]) + 1,
+        "stage": str(JobStage.EXTRACTING_AUDIO),
+        "started_at": now,
+        "completed_at": None,
+    })
+    return json.dumps(data, sort_keys=True)
+
+
+def _close_stage_event(raw: str, now: str) -> str:
+    data = json.loads(raw)
+    events = data.get("stage_events", [])
+    if events and events[-1].get("completed_at") is None:
+        events[-1]["completed_at"] = now
+    return json.dumps(data, sort_keys=True)
 
 
 def _recognition_payload(recognition: AsrRecognition) -> dict[str, object]:

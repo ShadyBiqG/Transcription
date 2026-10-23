@@ -48,9 +48,9 @@ class DiarizationParameters:
     """Параметры кластеризации, передаваемые в публичный API Sherpa-ONNX."""
 
     num_speakers: int = -1
-    clustering_threshold: float = 0.5
+    clustering_threshold: float = 0.9
     window_shift_ratio: float = 0.1
-    min_duration_on: float = 0.3
+    min_duration_on: float = 0.1
     min_duration_off: float = 0.5
 
     def __post_init__(self) -> None:

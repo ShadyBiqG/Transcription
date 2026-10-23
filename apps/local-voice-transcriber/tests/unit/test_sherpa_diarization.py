@@ -92,7 +92,7 @@ def test_preserves_adjacent_turns_of_the_same_local_sherpa_cluster(tmp_path: Pat
         loader=lambda _pack, _parameters: FakeDiarizer(
             [
                 RawTurn(start=0.5, end=1.0, speaker=0),
-                RawTurn(start=1.25, end=1.75, speaker=0),
+                RawTurn(start=1.25, end=1.37, speaker=0),
             ]
         ),
     )
@@ -110,7 +110,7 @@ def test_preserves_adjacent_turns_of_the_same_local_sherpa_cluster(tmp_path: Pat
         for item in intervals
     ] == [
         ("diarization-000001", 500, 1000, "0", "local-speaker:0"),
-        ("diarization-000002", 1250, 1750, "0", "local-speaker:0"),
+        ("diarization-000002", 1250, 1370, "0", "local-speaker:0"),
     ]
 
 
@@ -204,7 +204,7 @@ def test_preflight_constructs_diarizer_without_processing_audio(tmp_path: Path) 
     assert calls == [(pack, DiarizationParameters())]
 
 
-def test_default_loader_uses_public_sherpa_offline_diarization_api(
+def test_default_and_custom_loader_use_public_sherpa_offline_diarization_api(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -283,6 +283,15 @@ def test_default_loader_uses_public_sherpa_offline_diarization_api(
     )
     assert calls[4][0] == "diarization"
     assert calls[-1][0] == "diarizer"
+
+    calls.clear()
+    _load_sherpa_diarizer(pack, DiarizationParameters())
+
+    assert calls[3] == (
+        "clustering",
+        {"num_clusters": -1, "threshold": 0.9},
+    )
+    assert calls[4][1]["min_duration_on"] == 0.1
 
 
 def _capture_loader(

@@ -135,6 +135,17 @@ function Get-ServiceLogTail([string]$Path) {
 
 Assert-Administrator
 
+$systemDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::System)
+if ([string]::IsNullOrWhiteSpace($systemDirectory)) {
+    throw "The Windows system directory could not be resolved."
+}
+$powerShellPath = [System.IO.Path]::GetFullPath(
+    (Join-Path $systemDirectory "WindowsPowerShell\v1.0\powershell.exe")
+)
+if (-not (Test-Path -LiteralPath $powerShellPath -PathType Leaf)) {
+    throw "The Windows PowerShell executable was not found: $powerShellPath"
+}
+
 $applicationRootPath = (Resolve-Path -LiteralPath $ApplicationRoot).Path
 $dataRootPath = [System.IO.Path]::GetFullPath($DataRoot)
 $launcherPath = Join-Path $dataRootPath "start-transcription-next.ps1"
@@ -175,25 +186,13 @@ if ($LASTEXITCODE -ne 0) {
     throw "The exact service Python cannot load the installed candidate package. Run install-windows.ps1 first; setting PYTHONPATH is not required."
 }
 
-# Очиститель необязателен. При его сбое вложенный установщик оставляет корректную
-# метку false и возвращает успех, чтобы основная служба использовала
-# детерминированный offline fallback, а не становилась недоступной.
-$cleanerServiceInstaller = Join-Path $PSScriptRoot "install-windows-cleaner-service.ps1"
-if (-not (Test-Path -LiteralPath $cleanerServiceInstaller -PathType Leaf)) {
-    throw "The local cleaner service installer was not found: $cleanerServiceInstaller"
+# Локальный LLM-очиститель намеренно не запускается по умолчанию: на CPU он
+# конкурирует с ASR и может сделать обработку записей недоступной.
+$cleanerDisabler = Join-Path $PSScriptRoot "disable-windows-cleaner-service.ps1"
+if (-not (Test-Path -LiteralPath $cleanerDisabler -PathType Leaf)) {
+    throw "The local cleaner disabler was not found: $cleanerDisabler"
 }
-$powerShellPath = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
-$cleanerInstallerOutput = & $powerShellPath -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-    -File $cleanerServiceInstaller -DataRoot $dataRootPath 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Write-Warning "Локальный очиститель не был подготовлен: $($cleanerInstallerOutput | Out-String). Основная служба продолжит установку с rule-based очисткой."
-}
-else {
-    $cleanerMessage = ($cleanerInstallerOutput | Out-String).Trim()
-    if (-not [string]::IsNullOrWhiteSpace($cleanerMessage)) {
-        Write-Host $cleanerMessage
-    }
-}
+& $cleanerDisabler -EnvironmentFile $environmentFile
 . $environmentFile
 
 $serviceRoot = Join-Path $dataRootPath "windows-service"

@@ -187,6 +187,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.editor_repository.migrate()
         app.state.voice_directory_repository.migrate()
         app.state.vocabulary_repository.migrate()
+        worker_configuration = _configure_asr_worker(
+            application_settings,
+            app.state.jobs_repository,
+            app.state.editor_repository,
+            app.state.voice_directory_repository,
+            app.state.voice_directory_service,
+            app.state.vector_store,
+        )
         (
             dispatcher,
             asr_pack_id,
@@ -195,16 +203,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             voice_reason,
             embedding_adapter,
             diarization_pack,
-        ) = _configure_asr_worker(
-            application_settings,
-            app.state.jobs_repository,
-            app.state.editor_repository,
-            app.state.voice_directory_repository,
-            app.state.voice_directory_service,
-            app.state.vector_store,
-        )
+        ) = worker_configuration[:7]
+        diagnostic_packs = worker_configuration[7] if len(worker_configuration) > 7 else {}
         app.state.asr_ready = dispatcher is not None
         app.state.asr_pack_id = asr_pack_id
+        app.state.diagnostic_packs = diagnostic_packs
         app.state.asr_unavailable_reason = asr_reason
         app.state.asr_dispatcher = dispatcher
         app.state.voice_pack_id = voice_pack_id
@@ -269,6 +272,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.auth_rate_limiter = RateLimiter(application_settings.auth_rate_limit)
     app.state.asr_ready = False
     app.state.asr_pack_id = ""
+    app.state.diagnostic_packs = {}
     app.state.asr_unavailable_reason = "Локальный ASR model pack не настроен"
     app.state.asr_dispatcher = None
     app.state.dispatcher_status = lambda: (
@@ -589,15 +593,19 @@ def _configure_asr_worker(
     str | None,
     SherpaVoiceEmbeddingAdapter | None,
     LocalDiarizationPack | None,
+    dict[str, str | None],
 ]:
     """Собирает worker только из проверенных локальных ресурсов."""
 
     if settings.models_dir is None or settings.asr_manifest_path is None:
-        return None, "", "Не задан манифест локального ASR/VAD model pack", None, None, None, None
+        return (
+            None, "", "Не задан манифест локального ASR/VAD model pack",
+            None, None, None, None, {},
+        )
     if settings.ffmpeg_path is None:
-        return None, "", "Не задан путь к локальному FFmpeg", None, None, None, None
+        return None, "", "Не задан путь к локальному FFmpeg", None, None, None, None, {}
     if not settings.ffmpeg_path.is_file():
-        return None, "", "Локальный FFmpeg недоступен", None, None, None, None
+        return None, "", "Локальный FFmpeg недоступен", None, None, None, None, {}
     try:
         packs = load_asr_model_packs(settings.asr_manifest_path, models_root=settings.models_dir)
         asr_adapter = OfflineAsrAdapter(
@@ -608,7 +616,10 @@ def _configure_asr_worker(
         )
         asr_adapter.preflight()
     except (AsrRuntimeError, ModelPackManifestError, PackVerificationError):
-        return None, "", "Локальный ASR/VAD model pack не прошёл проверку", None, None, None, None
+        return (
+            None, "", "Локальный ASR/VAD model pack не прошёл проверку",
+            None, None, None, None, {},
+        )
     diarizer = None
     embedding_adapter = None
     voice_pack_id: str | None = None
@@ -688,14 +699,20 @@ def _configure_asr_worker(
         voice_reason,
         embedding_adapter,
         diarization_pack,
+        {
+            "asr_model": packs.asr.model_name,
+            "asr_pack_id": packs.asr.pack_id,
+            "vad_pack_id": packs.vad.pack_id if packs.vad is not None else None,
+            "voice_pack_id": voice_pack_id,
+        },
     )
 
 
 def _configured_transcript_cleaner(settings: Settings) -> TranscriptCleaner:
     """Собирает только локальный optional cleaner с безусловным offline fallback.
 
-    Установщик пока не управляет отдельным процессом llama.cpp, поэтому даже
-    включённая, но неполная конфигурация никогда не делает ASR job ошибочным.
+    Штатный установщик намеренно не запускает отдельный процесс llama.cpp, поэтому
+    даже включённая, но неполная конфигурация никогда не делает ASR job ошибочным.
     """
 
     fallback = RuleBasedDeletionCleaner()

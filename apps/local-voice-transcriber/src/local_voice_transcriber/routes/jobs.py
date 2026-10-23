@@ -345,6 +345,98 @@ def _run_projection(run: JobRun) -> dict[str, object]:
         "created_at": run.created_at,
         "started_at": run.started_at,
         "completed_at": run.completed_at,
+        "diagnostics": _run_diagnostics(run),
+    }
+
+
+def _duration_seconds(start: str | None, end: str | None) -> float | None:
+    if start is None or end is None:
+        return None
+    try:
+        elapsed = (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds()
+    except ValueError:
+        return None
+    return round(elapsed, 3) if elapsed >= 0 else None
+
+
+def _safe_pack_name(value: object) -> str | None:
+    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", value):
+        return value
+    return None
+
+
+_REASON_TEXT = {
+    "worker_processing_error": "Локальная обработка завершилась ошибкой",
+    "worker_heartbeat_expired": "Связь с обработчиком была прервана",
+    "retry_exhausted": "Попытки обработки исчерпаны",
+}
+
+
+def _run_diagnostics(run: JobRun) -> dict[str, object]:
+    """Проецирует только разрешённые данные без путей, manifest и ошибок worker."""
+
+    data = run.diagnostics_data or {}
+    raw_packs = data.get("packs")
+    packs = raw_packs if isinstance(raw_packs, dict) else {}
+    stages = data.get("stages")
+    stages = stages if isinstance(stages, dict) else {}
+    group_count = None
+    for stage_name in ("publishing", "asr", "matching", "diarizing"):
+        final_stage = stages.get(stage_name)
+        if isinstance(final_stage, dict):
+            value = final_stage.get("local_speaker_group_count")
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                group_count = value
+                break
+    events: list[dict[str, object]] = []
+    raw_events = data.get("stage_events")
+    if isinstance(raw_events, list):
+        for event in raw_events:
+            if not isinstance(event, dict) or event.get("stage") not in {
+                "extracting_audio", "asr", "diarizing", "matching", "publishing"
+            }:
+                continue
+            started_at = event.get("started_at")
+            completed_at = event.get("completed_at")
+            if not isinstance(started_at, str):
+                continue
+            if completed_at is not None and not isinstance(completed_at, str):
+                continue
+            attempt = event.get("attempt")
+            if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1:
+                continue
+            events.append({
+                "attempt": attempt,
+                "stage": event["stage"],
+                "started_at": started_at,
+                "completed_at": completed_at,
+                "duration_seconds": _duration_seconds(started_at, completed_at),
+            })
+    audio_duration_ms = data.get("audio_duration_ms")
+    audio_duration = (
+        round(audio_duration_ms / 1000, 3)
+        if isinstance(audio_duration_ms, int)
+        and not isinstance(audio_duration_ms, bool)
+        and audio_duration_ms >= 0
+        else None
+    )
+    return {
+        "status": run.status,
+        "current_stage": run.stage if run.status is JobStatus.PROCESSING else None,
+        "reason_code": run.error_code if run.error_code in _REASON_TEXT else None,
+        "reason": _REASON_TEXT.get(run.error_code),
+        "attempt": run.attempt,
+        "max_attempts": run.max_attempts,
+        "retry_count": max(0, run.attempt - 1),
+        "audio_duration_seconds": audio_duration,
+        "queue_duration_seconds": _duration_seconds(run.created_at, run.started_at),
+        "total_duration_seconds": _duration_seconds(run.started_at, run.completed_at),
+        "stages": events,
+        "asr_model": _safe_pack_name(packs.get("asr_model")),
+        "asr_pack_id": _safe_pack_name(packs.get("asr_pack_id") or run.asr_pack_id),
+        "vad_pack_id": _safe_pack_name(packs.get("vad_pack_id")),
+        "voice_pack_id": _safe_pack_name(packs.get("voice_pack_id") or run.voice_pack_id),
+        "local_speaker_group_count": group_count,
     }
 
 
@@ -643,6 +735,7 @@ def create_run(
             request_id=idempotency_key,
             asr_pack_id=request.app.state.asr_pack_id,
             voice_pack_id=request.app.state.voice_pack_id,
+            diagnostics_packs=request.app.state.diagnostic_packs,
         )
     except InvalidRunState as error:
         raise ApiError(

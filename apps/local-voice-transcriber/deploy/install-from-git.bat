@@ -155,7 +155,7 @@ call :fail "The PowerShell installer failed. The legacy application was not chan
 goto :end
 
 :stop_candidate_service
-powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; try { foreach ($name in @('TranscriptionNextCandidateService', 'TranscriptionNextCleanerService')) { $service = Get-Service -Name $name -ErrorAction SilentlyContinue; if ($null -ne $service -and $service.Status -ne 'Stopped') { Stop-Service -Name $name -ErrorAction Stop; $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(60)) }; if ($null -ne $service) { $service.Dispose() } }; exit 0 } catch { Write-Error $_; exit 1 }"
+powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; try { foreach ($name in @('TranscriptionNextCandidateService', 'TranscriptionNextCleanerService')) { $service = Get-Service -Name $name -ErrorAction SilentlyContinue; if ($null -ne $service -and $service.Status -ne 'Stopped') { Stop-Service -Name $name -ErrorAction Stop; $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(60)) }; if ($null -ne $service) { $service.Dispose() }; if ($name -eq 'TranscriptionNextCleanerService' -and $null -ne (Get-Service -Name $name -ErrorAction SilentlyContinue)) { Set-Service -Name $name -StartupType Disabled -ErrorAction Stop } }; exit 0 } catch { Write-Error $_; exit 1 }"
 exit /b %errorlevel%
 
 :service_stop_failed

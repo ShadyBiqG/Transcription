@@ -4,10 +4,9 @@
 Обычный Windows-установщик один раз доставляет проверенный набор в
 `NEXT_DATA_DIR/models`, сверяет каждый файл по SHA-256 и создаёт manifest
 `asr-pack.json`. Он также запускает локальную проверку загрузки ASR, VAD,
-диаризации, голосового extractor и FFmpeg. Для чистого черновика он отдельно
-доставляет закреплённые GGUF-веса Qwen и `llama-server.exe`. Затем установщик
-службы запускает проверенный локальный LLM только на loopback и включает его
-для приложения лишь после health-проверки. Неверная контрольная сумма или
+диаризации, голосового extractor и FFmpeg. Штатный установщик не доставляет
+LLM-веса или llama.cpp и принудительно оставляет `NEXT_CLEANER_ENABLED=false`,
+чтобы не отнимать CPU и память у ASR. Неверная контрольная сумма или
 несовместимый runtime останавливают доставку пакетов до создания учётной
 записи.
 
@@ -18,21 +17,22 @@
 прав, его нужно подтвердить.
 
 Для сервера из примера это будут `E:\TranscriptionData\models` и
-`E:\TranscriptionData\tools`. Первая загрузка составляет приблизительно 2.2 ГБ;
+`E:\TranscriptionData\tools`. Первая загрузка составляет приблизительно 1.1 ГБ;
 на диске data root требуется не менее 7 ГБ свободного места для временного
 каталога и распаковки.
 
 ## Состав стандартного пакета
 
-- ASR: GigaAM v3 E2E CTC (`gigaam-v3-e2e-ctc`) из закреплённого revision
+- ASR: GigaAM v3 RNN-T (`gigaam-v3-rnnt`) из закреплённого revision
   `322c3b29492673eb7d0b434bfa9dfb8653e34d02`: `config.json`,
-  `v3_e2e_ctc.onnx`, `v3_e2e_ctc_vocab.txt`. Источник:
+  `v3_rnnt_encoder.onnx`, `v3_rnnt_decoder.onnx`, `v3_rnnt_joint.onnx`,
+  `v3_vocab.txt`. Источник:
   [istupakov/gigaam-v3-onnx](https://huggingface.co/istupakov/gigaam-v3-onnx),
-  лицензия MIT. E2E-вариант возвращает текст с нормализацией и пунктуацией;
-  он не является фильтром слов-паразитов и не гарантирует их удаления.
-  При обновлении прежний каталог `gigaam-v3-ctc-322c3b29` не удаляется:
-  установщик сначала целиком проверяет отдельный E2E-каталог и только затем
-  заменяет manifest.
+  лицензия MIT. RNN-T выбран как дефолтный пакет из-за лучшей точности на
+  проверенном наборе onnx-asr; нормализацию и пунктуацию он не гарантирует и
+  не является фильтром слов-паразитов. Установщик сверяет SHA-256 и размер
+  всех пяти файлов перед публикацией каталога. Прежний E2E-каталог не удаляется:
+  manifest переключается только после полной проверки нового RNN-T-пакета.
 - VAD: Silero (`silero_vad.onnx`) из закреплённого revision
   `b3e3ee3cce4c11ceb63b1a0b229d916069c1ddf6`. Источник:
   [istupakov/silero-vad-onnx](https://huggingface.co/istupakov/silero-vad-onnx),
@@ -47,21 +47,6 @@
   поставки дополнительно защищён известной SHA-256 архива: при изменении
   «latest»-артефакта установка остановится, пока пакет не будет обновлён в
   коде приложения.
-- Локальный очиститель: Qwen2.5-1.5B-Instruct-GGUF в квантизации `Q4_K_M`
-  из официального [Qwen/Qwen2.5-1.5B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF),
-  revision `91cad51170dc346986eccefdc2dd33a9da36ead9`. Установщик принимает
-  только `qwen2.5-1.5b-instruct-q4_k_m.gguf` размером 1 117 320 736 байт и
-  SHA-256 `6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e`.
-  Лицензия модели — Apache-2.0.
-- Локальный runtime очистителя: CPU-сборка без AVX
-  `llama-b5092-bin-win-noavx-x64.zip` из официального release
-  [ggml-org/llama.cpp b5092](https://github.com/ggml-org/llama.cpp/releases/tag/b5092).
-  Архив принимается только с SHA-256
-  `4a4c6aef72ff13122d56a9ab59acf697603ce9084087427400ae7d1b7ebaef71`;
-  до публикации распаковывается во временный каталог, проверяется безопасная
-  структура путей и запуск `llama-server.exe --version`. Код llama.cpp
-  распространяется по MIT.
-
 Версии `onnx-asr[cpu]==0.12.0`, `sherpa-onnx==1.13.7` и строго совпадающего
 `sherpa-onnx-core==1.13.7` закреплены в `pyproject.toml`. Отдельный core
 устраняет Windows-конфликт встроенной ONNX-библиотеки Sherpa с ONNX Runtime,
@@ -85,22 +70,19 @@ Manifest находится внутри `NEXT_MODELS_DIR` и содержит �
 $env:NEXT_MODELS_DIR = "E:\TranscriptionData\models"
 $env:NEXT_ASR_MANIFEST = "E:\TranscriptionData\models\asr-pack.json"
 $env:NEXT_FFMPEG_PATH = "E:\TranscriptionData\tools\ffmpeg-n8.1-20261021\bin\ffmpeg.exe"
-$env:NEXT_CLEANER_MODEL_PATH = "E:\TranscriptionData\models\cleaner\qwen2.5-1.5b-instruct-q4-k-m-91cad511\qwen2.5-1.5b-instruct-q4_k_m.gguf"
-$env:NEXT_CLEANER_LLAMA_SERVER_PATH = "E:\TranscriptionData\tools\llama.cpp-b5092-win-noavx-x64\llama-server.exe"
+$env:NEXT_CLEANER_MODEL_PATH = ""
+$env:NEXT_CLEANER_LLAMA_SERVER_PATH = ""
 $env:NEXT_CLEANER_ENDPOINT = "http://127.0.0.1:8020"
-$env:NEXT_CLEANER_ENABLED = "true" # только после health-проверки cleaner-службы
+$env:NEXT_CLEANER_ENABLED = "false" # LLM cleaner отключён по умолчанию
 ```
 
-`TranscriptionNextCleanerService` запускает `llama-server.exe` от
-`LocalService` с `--host 127.0.0.1 --port 8020 --ctx-size 4096 --parallel 1`.
-Установщик сначала записывает `NEXT_CLEANER_ENABLED=false`, ждёт
-`http://127.0.0.1:8020/health` и только затем меняет значение на `true`.
-Если загрузка модели, служба или health-проверка не удались, значение остаётся
-`false`, а основная `TranscriptionNextCandidateService` продолжает работу с
-rule-based очисткой. При недоступном локальном LLM приложение должно сохранить
-исходную транскрипцию и показать её вместо изменённого текста. GGUF-веса и
-llama.cpp не входят в `asr-pack.json`, потому что это отдельный runtime
-очистки, а не ONNX ASR-пакет.
+`TranscriptionNextCleanerService` не является частью штатного запуска. При
+обновлении установщик останавливает ранее созданную службу и устанавливает ей
+тип запуска `Disabled`; `llama-server.exe` не слушает порт 8020. Основная
+`TranscriptionNextCandidateService` продолжает работу с rule-based очисткой.
+При недоступном локальном LLM приложение должно сохранить исходную
+транскрипцию и показать её вместо изменённого текста. Пакеты Qwen или llama.cpp,
+оставшиеся от прежней версии, не входят в `asr-pack.json` и не используются.
 
 Для одного `DataPath` разрешён ровно один процесс приложения. Каталог ZeusDB
 расположен внутри `NEXT_DATA_DIR`, хранит общий голосовой индекс и должен быть
@@ -112,3 +94,16 @@ llama.cpp не входят в `asr-pack.json`, потому что это от�
 группы для ручного решения в редакторе. После калибровки оператор явно задаёт
 пороги и включает `NEXT_VOICE_CALIBRATED=true` и
 `NEXT_VOICE_AUTO_ASSIGN_ENABLED=true`.
+
+## Число локальных спикеров
+
+Новые запуски диаризации Sherpa-ONNX оставляют число спикеров автоматическим
+(`num_speakers=-1`) и используют порог кластеризации `0.9` вместо `0.5`.
+По [документации Sherpa-ONNX](https://k2-fsa.github.io/sherpa/onnx/speaker-diarization/models.html)
+больший порог создаёт меньше групп; `0.9` приведён там как пример для записи с
+неизвестным числом спикеров. Минимальная длительность речевого фрагмента снижена
+до `0.1` с, чтобы реже отбрасывать короткие реплики: Sherpa удаляет фрагменты
+короче [`min_duration_on`](https://k2-fsa.github.io/sherpa/onnx/c-api/html/structSherpaOnnxOfflineSpeakerDiarizationConfig.html).
+Это не гарантирует правильного числа участников на каждой записи. Имена,
+разделение и объединение групп необходимо сверять вручную. Уже опубликованные
+результаты и редакторские ревизии не пересчитываются.

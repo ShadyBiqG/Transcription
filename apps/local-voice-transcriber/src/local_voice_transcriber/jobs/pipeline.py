@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import wave
 from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
@@ -88,6 +89,16 @@ class AsrJobProcessor:
             manifest={"normalized_audio": str(normalized.relative_to(self._jobs_root))},
         )
         await asyncio.to_thread(self._normalizer.normalize, source, normalized)
+        try:
+            with wave.open(str(normalized), "rb") as audio:
+                duration_ms = round(audio.getnframes() * 1000 / audio.getframerate())
+                if duration_ms >= 0:
+                    self._repository.record_audio_duration(
+                        run_id=run.id, worker_id=run.lease_owner or "", duration_ms=duration_ms
+                    )
+        except (OSError, EOFError, ValueError, wave.Error, ZeroDivisionError):
+            # Тестовые adapters и старые артефакты могут не содержать валидный PCM WAV.
+            pass
         self._raise_if_cancelled(cancellation_requested)
         self._repository.stage_manifest(
             run_id=run.id,
@@ -108,8 +119,24 @@ class AsrJobProcessor:
             )
             diarization_intervals = await asyncio.to_thread(self._diarizer.diarize, normalized)
             self._raise_if_cancelled(cancellation_requested)
+            self._repository.stage_manifest(
+                run_id=run.id,
+                worker_id=run.lease_owner or "",
+                stage=JobStage.DIARIZING,
+                manifest={"local_speaker_group_count": len({
+                    interval.speaker_group_id for interval in diarization_intervals
+                })},
+            )
         voice_matches: tuple[AutomaticSpeakerGroupMatch, ...] = ()
         if self._voice_matcher is not None and diarization_intervals:
+            self._repository.stage_manifest(
+                run_id=run.id,
+                worker_id=run.lease_owner or "",
+                stage=JobStage.MATCHING,
+                manifest={"speaker_group_count": len({
+                    interval.speaker_group_id for interval in diarization_intervals
+                })},
+            )
             voice_matches = await asyncio.to_thread(
                 self._voice_matcher.match_groups,
                 normalized_wav_path=normalized,
@@ -137,6 +164,9 @@ class AsrJobProcessor:
                 "source_records_saved": True,
                 "segment_count": len(recognition.segments),
                 "diarization_interval_count": len(diarization_intervals),
+                "local_speaker_group_count": len({
+                    interval.speaker_group_id for interval in diarization_intervals
+                }),
                 "voice_match_group_count": len(voice_matches),
                 "editor_baseline": self._publisher is not None,
             },
