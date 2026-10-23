@@ -10,7 +10,92 @@ def _headers(client: TestClient) -> dict[str, str]:
 
 
 def _webm() -> bytes:
-    return b"\x1a\x45\xdf\xa3" + b"test-webm"
+    ebml_header = (
+        b"\x42\x86\x81\x01"  # Версия EBML.
+        b"\x42\xf7\x81\x01"  # Минимальная версия чтения EBML.
+        b"\x42\xf2\x81\x04"  # Максимальная длина идентификатора.
+        b"\x42\xf3\x81\x08"  # Максимальная длина размера.
+        b"\x42\x82\x84webm"  # Тип документа.
+        b"\x42\x87\x81\x04"  # Версия типа документа.
+        b"\x42\x85\x81\x02"  # Минимальная версия чтения типа документа.
+    )
+    return b"\x1a\x45\xdf\xa3\x9f" + ebml_header + b"\x18\x53\x80\x67\xff"
+
+
+def _mp3() -> bytes:
+    return b"ID3\x04\x00\x00\x00\x00\x00\x00" + _mp3_frame()
+
+
+def _mp3_frame() -> bytes:
+    return b"\xff\xfb\x90\x64"
+
+
+def _synchsafe(value: int) -> bytes:
+    assert 0 <= value < 1 << 28
+    return bytes(value >> shift & 0x7F for shift in (21, 14, 7, 0))
+
+
+def _mp3_with_id3_tag(tag_size: int, trailing: bytes = b"") -> bytes:
+    return b"ID3\x04\x00\x00" + _synchsafe(tag_size) + b"\x00" * tag_size + trailing
+
+
+def _wav() -> bytes:
+    return b"RIFF\x24\x00\x00\x00WAVEfmt " + b"test-wav"
+
+
+def _m4a() -> bytes:
+    return b"\x00\x00\x00\x18ftypM4A " + b"test-m4a"
+
+
+def _aac() -> bytes:
+    return b"\xff\xf1\x50\x80" + b"test-aac"
+
+
+def _ogg() -> bytes:
+    return _ogg_page(b"\x01vorbis")
+
+
+def _opus() -> bytes:
+    opus_head = b"OpusHead\x01\x02\x00\x00\x80\xbb\x00\x00\x00\x00\x00"
+    return _ogg_page(opus_head)
+
+
+def _multichannel_opus() -> bytes:
+    opus_head = b"OpusHead\x01\x02\x00\x00\x80\xbb\x00\x00\x00\x00\x01\x01\x01\x00\x01"
+    return _ogg_page(opus_head)
+
+
+def _ogg_crc32(page: bytes | bytearray) -> int:
+    value = 0
+    for byte in page:
+        value ^= byte << 24
+        for _ in range(8):
+            value = (value << 1) ^ (0x04C11DB7 if value & 0x80000000 else 0)
+            value &= 0xFFFFFFFF
+    return value
+
+
+def _ogg_page(packet: bytes) -> bytes:
+    page = bytearray(
+        b"OggS\x00\x02"  # Сигнатура, версия и начало логического потока.
+        + b"\x00" * 8  # Позиция гранулы.
+        + b"\x01\x00\x00\x00"  # Серийный номер потока.
+        + b"\x00\x00\x00\x00"  # Номер страницы.
+        + b"\x00" * 4  # Место для контрольной суммы.
+        + b"\x01"  # Одно значение таблицы сегментов.
+        + bytes([len(packet)])
+        + packet
+    )
+    page[22:26] = _ogg_crc32(page).to_bytes(4, byteorder="little")
+    return bytes(page)
+
+
+def _mp4() -> bytes:
+    return b"\x00\x00\x00\x18ftypisom" + b"test-mp4"
+
+
+def _mov() -> bytes:
+    return b"\x00\x00\x00\x18ftypqt  " + b"test-mov"
 
 
 def _create_job(client: TestClient) -> str:
@@ -43,7 +128,7 @@ def test_upload_and_list_are_private(client: TestClient) -> None:
         assert other.get(f"/api/v1/jobs/{job_id}/source").status_code == 404
 
 
-def test_upload_requires_csrf_and_valid_webm(client: TestClient) -> None:
+def test_upload_requires_csrf_and_valid_media(client: TestClient) -> None:
     register(client)
     login(client)
 
@@ -57,6 +142,161 @@ def test_upload_requires_csrf_and_valid_webm(client: TestClient) -> None:
     )
     assert invalid.status_code == 422
     assert invalid.json()["code"] == "invalid_media"
+
+
+@pytest.mark.parametrize(
+    ("filename", "payload", "content_type"),
+    [
+        ("meeting.webm", _webm(), "video/webm"),
+        ("meeting.mp3", _mp3(), "audio/mpeg"),
+        ("recorder.mp3", _mp3_frame(), "audio/mpeg"),
+        ("meeting.wav", _wav(), "audio/wav"),
+        ("meeting.m4a", _m4a(), "audio/mp4"),
+        ("recorder.m4a", _mp4(), "audio/mp4"),
+        ("meeting.aac", _aac(), "audio/aac"),
+        ("meeting.ogg", _ogg(), "audio/ogg"),
+        ("meeting.opus", _opus(), "audio/ogg"),
+        ("surround.opus", _multichannel_opus(), "audio/ogg"),
+        ("meeting.mp4", _mp4(), "video/mp4"),
+        ("meeting.mov", _mov(), "video/quicktime"),
+    ],
+)
+def test_upload_accepts_supported_media_only_with_matching_signature(
+    client: TestClient, filename: str, payload: bytes, content_type: str
+) -> None:
+    register(client)
+    login(client)
+
+    response = client.post(
+        "/api/v1/jobs",
+        headers=_headers(client),
+        files={"media": (filename, payload, content_type)},
+    )
+
+    assert response.status_code == 201, response.text
+    job = response.json()["job"]
+    assert job["source_name"] == filename
+    audio = client.get(f"/api/v1/jobs/{job['id']}/audio")
+    assert audio.status_code == 200
+    assert audio.headers["content-type"].startswith(content_type)
+
+
+def test_upload_accepts_id3_tag_larger_than_signature_window_when_audio_follows(
+    client: TestClient,
+) -> None:
+    register(client)
+    login(client)
+    payload = _mp3_with_id3_tag(64 * 1024, _mp3_frame())
+
+    response = client.post(
+        "/api/v1/jobs",
+        headers=_headers(client),
+        files={"media": ("meeting.mp3", payload, "audio/mpeg")},
+    )
+
+    assert response.status_code == 201, response.text
+
+
+def test_upload_rejects_large_id3_tag_without_bytes_for_audio_frame(client: TestClient) -> None:
+    register(client)
+    login(client)
+    payload = _mp3_with_id3_tag(64 * 1024)
+
+    response = client.post(
+        "/api/v1/jobs",
+        headers=_headers(client),
+        files={"media": ("meeting.mp3", payload, "audio/mpeg")},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "invalid_media"
+
+
+@pytest.mark.parametrize(
+    ("filename", "payload", "error_code"),
+    [
+        ("meeting.mp3", _webm(), "invalid_media"),
+        ("meeting.mp4", _wav(), "invalid_media"),
+        ("meeting.opus", _ogg(), "invalid_media"),
+        ("meeting.webm", b"not-a-container", "invalid_media"),
+        ("meeting.exe", _webm(), "unsupported_media"),
+    ],
+)
+def test_upload_rejects_wrong_or_unsupported_media(
+    client: TestClient, filename: str, payload: bytes, error_code: str
+) -> None:
+    register(client)
+    login(client)
+
+    response = client.post(
+        "/api/v1/jobs",
+        headers=_headers(client),
+        files={"media": (filename, payload, "application/octet-stream")},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == error_code
+    assert client.get("/api/v1/jobs").json() == {"items": [], "next_cursor": None}
+
+
+@pytest.mark.parametrize(
+    ("filename", "payload"),
+    [
+        ("meeting.webm", b"\x1a\x45\xdf\xa3\x42\x82\x84webm" + b"arbitrary"),
+        ("meeting.mp3", b"ID3\x04\x00\x00" + b"arbitrary"),
+        ("meeting.opus", _ogg_page(b"arbitrary-OpusHead")),
+    ],
+)
+def test_upload_rejects_unstructured_magic_marker_payloads(
+    client: TestClient, filename: str, payload: bytes
+) -> None:
+    register(client)
+    login(client)
+
+    response = client.post(
+        "/api/v1/jobs",
+        headers=_headers(client),
+        files={"media": (filename, payload, "application/octet-stream")},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "invalid_media"
+    assert client.get("/api/v1/jobs").json() == {"items": [], "next_cursor": None}
+
+
+@pytest.mark.parametrize(
+    ("filename", "payload"), [("meeting.ogg", _ogg()), ("meeting.opus", _opus())]
+)
+def test_upload_rejects_ogg_with_invalid_page_crc(
+    client: TestClient, filename: str, payload: bytes
+) -> None:
+    register(client)
+    login(client)
+    corrupted = bytearray(payload)
+    corrupted[22] ^= 0x01
+
+    response = client.post(
+        "/api/v1/jobs",
+        headers=_headers(client),
+        files={"media": (filename, bytes(corrupted), "audio/ogg")},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "invalid_media"
+
+
+def test_upload_sanitizes_client_path_before_exposing_source_name(client: TestClient) -> None:
+    register(client)
+    login(client)
+
+    response = client.post(
+        "/api/v1/jobs",
+        headers=_headers(client),
+        files={"media": (r"C:\\private\\meeting.MP3", _mp3(), "audio/mpeg")},
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["job"]["source_name"] == "meeting.mp3"
 
 
 def test_run_is_safely_blocked_without_verified_local_pack(client: TestClient) -> None:

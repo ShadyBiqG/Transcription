@@ -13,13 +13,25 @@ class MediaNormalizationError(RuntimeError):
 class FfmpegNormalizer:
     """Вызывает FFmpeg только со статическим argv и путями из candidate data root."""
 
+    _SOURCE_SUFFIXES = {
+        ".webm",
+        ".mp3",
+        ".wav",
+        ".m4a",
+        ".aac",
+        ".ogg",
+        ".opus",
+        ".mp4",
+        ".mov",
+    }
+
     def __init__(self, executable: Path, *, jobs_root: Path, timeout_seconds: int = 600) -> None:
         self._executable = executable
         self._jobs_root = jobs_root
         self._timeout_seconds = timeout_seconds
 
     def normalize(self, source: Path, destination: Path) -> None:
-        self._validate_path(source, suffixes={".webm", ".wav", ".mp4", ".m4a"}, must_exist=True)
+        self._validate_path(source, suffixes=self._SOURCE_SUFFIXES, must_exist=True)
         self._validate_path(destination, suffixes={".wav"}, must_exist=False)
         if not self._executable.is_file():
             raise MediaNormalizationError("FFmpeg не установлен")

@@ -16,7 +16,15 @@ def _create_job(client: TestClient) -> str:
     response = client.post(
         "/api/v1/jobs",
         headers=_headers(client),
-        files={"media": ("meeting.webm", b"\x1a\x45\xdf\xa3" + b"content", "video/webm")},
+        files={
+            "media": (
+                "meeting.webm",
+                b"\x1a\x45\xdf\xa3\x9f"
+                + b"\x42\x86\x81\x01\x42\xf7\x81\x01\x42\xf2\x81\x04\x42\xf3\x81\x08"
+                + b"\x42\x82\x84webm\x42\x87\x81\x04\x42\x85\x81\x02\x18\x53\x80\x67\xff",
+                "video/webm",
+            )
+        },
     )
     assert response.status_code == 201, response.text
     return response.json()["job"]["id"]

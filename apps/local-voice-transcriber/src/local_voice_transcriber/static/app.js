@@ -2,9 +2,14 @@
   "use strict";
 
   const api = "/api/v1";
+  const supportedMediaExtensions = new Set([
+    ".webm", ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".mp4", ".mov",
+  ]);
+  const supportedMediaLabel = ".webm, .mp3, .wav, .m4a, .aac, .ogg, .opus, .mp4 или .mov";
   const state = {
     csrf: "", editor: null, user: null, generation: 0, editorGeneration: 0,
     jobsTimer: null, jobsGeneration: 0, jobs: [], pendingRuns: new Set(), authBusy: false,
+    uploadBusy: false,
   };
   const byId = (id) => document.getElementById(id);
   const statusLabels = {
@@ -37,8 +42,10 @@
     byId("register-form").hidden = login;
     byId("show-login").classList.toggle("active", login);
     byId("show-register").classList.toggle("active", !login);
-    byId("show-login").setAttribute("aria-pressed", String(login));
-    byId("show-register").setAttribute("aria-pressed", String(!login));
+    byId("show-login").setAttribute("aria-selected", String(login));
+    byId("show-register").setAttribute("aria-selected", String(!login));
+    byId("show-login").tabIndex = login ? 0 : -1;
+    byId("show-register").tabIndex = login ? -1 : 0;
   }
 
   function setAuthBusy(busy) {
@@ -46,12 +53,19 @@
     document.querySelectorAll("#auth-panel button").forEach((button) => { button.disabled = busy; });
   }
 
+  function isSupportedMediaFile(file) {
+    const name = String(file?.name || "").trim().toLowerCase();
+    return supportedMediaExtensions.has(name.slice(name.lastIndexOf(".")));
+  }
+
   function updateSelectedMedia() {
     const file = byId("media-input").files[0];
+    const supported = isSupportedMediaFile(file);
     byId("selected-media").textContent = file
-      ? file.name + " · " + new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(file.size / 1024 / 1024) + " МБ"
-      : "Файл .webm не выбран";
-    byId("add-job-button").disabled = !file;
+      ? file.name + " · " + new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(file.size / 1024 / 1024) +
+        " МБ" + (supported ? "" : " · неподдерживаемый формат")
+      : "Файл не выбран";
+    byId("upload-and-start-button").disabled = !file || !supported || state.uploadBusy;
   }
 
   function clearEditor() {
@@ -77,6 +91,7 @@
     state.csrf = "";
     state.user = null;
     state.pendingRuns.clear();
+    state.uploadBusy = false;
     state.jobs = [];
     clearTimeout(state.jobsTimer);
     clearEditor();
@@ -84,7 +99,6 @@
     ["login-form", "register-form", "upload-form", "profile-form", "vocabulary-form"].forEach((id) => byId(id).reset());
     document.querySelectorAll("#profile-form button, #vocabulary-form button, #admin-retry-index").forEach((button) => { button.disabled = false; });
     updateSelectedMedia();
-    byId("choose-media").disabled = false;
     byId("media-input").disabled = false;
     byId("notice").hidden = true;
     byId("notice").textContent = "";
@@ -155,7 +169,10 @@
       item.classList.toggle("active", item.id === name + "-view");
     });
     document.querySelectorAll("[data-view]").forEach((item) => {
-      item.classList.toggle("active", item.dataset.view === name);
+      const active = item.dataset.view === name;
+      item.classList.toggle("active", active);
+      if (active) item.setAttribute("aria-current", "page");
+      else item.removeAttribute("aria-current");
     });
   }
 
@@ -373,29 +390,44 @@
     }
   }
 
+  async function enqueueRun(job) {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    const key = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    await request("/jobs/" + encodeURIComponent(job.id) + "/runs", {
+      method: "POST", headers: { "Idempotency-Key": key },
+    });
+  }
+
   async function startRun(job, button) {
     if (!state.user || state.pendingRuns.has(job.id)) return;
     const generation = state.generation;
     state.pendingRuns.add(job.id);
     button.disabled = true;
     button.textContent = "Запуск…";
+    let started = false;
+    let refreshFailed = false;
     try {
-      const bytes = crypto.getRandomValues(new Uint8Array(16));
-      const key = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-      await request("/jobs/" + encodeURIComponent(job.id) + "/runs", {
-        method: "POST", headers: { "Idempotency-Key": key },
-      });
+      await enqueueRun(job);
+      started = true;
       state.pendingRuns.delete(job.id);
-      await loadJobs();
+      try {
+        await loadJobs();
+      } catch (error) {
+        if (error instanceof StaleSessionError) throw error;
+        refreshFailed = true;
+      }
       requireGeneration(generation);
-      notify("Запись поставлена в очередь транскрибации.");
+      notify(refreshFailed
+        ? "Запись поставлена в очередь, но список не обновился. Нажмите «Обновить список»."
+        : "Запись поставлена в очередь транскрибации.", refreshFailed);
     } catch (error) {
       showError(error);
     } finally {
       if (generation === state.generation) {
         state.pendingRuns.delete(job.id);
-        button.disabled = false;
-        button.textContent = "Транскрибировать";
+        button.disabled = started;
+        button.textContent = started ? "В очереди · обновите список" :
+          job.status === "uploaded" ? "Транскрибировать" : "Повторить обработку";
       }
     }
   }
@@ -881,31 +913,62 @@
   byId("upload-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
-    const button = byId("add-job-button");
-    if (button.disabled || !state.user) return;
+    const button = byId("upload-and-start-button");
+    if (button.disabled || !state.user || state.uploadBusy) return;
     const file = byId("media-input").files[0];
-    if (!file || !file.name.toLowerCase().endsWith(".webm")) {
-      notify("Выберите файл .webm.", true);
+    if (!isSupportedMediaFile(file)) {
+      notify("Выберите запись в формате " + supportedMediaLabel + ".", true);
       return;
     }
     const generation = state.generation;
     const body = new FormData(form);
+    let uploadedJob = null;
+    state.uploadBusy = true;
     button.disabled = true;
-    byId("choose-media").disabled = true;
+    button.textContent = "Загрузка…";
     byId("media-input").disabled = true;
     try {
-      await request("/jobs", { method: "POST", body });
+      const created = await request("/jobs", { method: "POST", body });
+      requireGeneration(generation);
+      uploadedJob = created.job;
+      state.pendingRuns.add(uploadedJob.id);
+      button.textContent = "Запуск обработки…";
+      let runError = null;
+      try {
+        await enqueueRun(uploadedJob);
+      } catch (error) {
+        if (error instanceof StaleSessionError) throw error;
+        runError = error;
+      } finally {
+        state.pendingRuns.delete(uploadedJob.id);
+      }
       form.reset();
       updateSelectedMedia();
-      await loadJobs();
+      let refreshError = null;
+      try {
+        await loadJobs();
+      } catch (error) {
+        if (error instanceof StaleSessionError) throw error;
+        refreshError = error;
+      }
       requireGeneration(generation);
-      notify("Запись добавлена в список. Нажмите «Транскрибировать», чтобы начать обработку.");
+      if (runError) {
+        notify("Файл «" + uploadedJob.source_name + "» загружен, но обработка не запустилась: " + runError.message +
+          " Обновите список и нажмите «Транскрибировать» у этой записи.", true);
+      } else if (refreshError) {
+        notify("Файл «" + uploadedJob.source_name + "» поставлен в очередь. Список не обновился: " +
+          refreshError.message + " Нажмите «Обновить список».", true);
+      } else {
+        notify("Файл «" + uploadedJob.source_name + "» загружен и поставлен в очередь транскрибации.");
+      }
     } catch (error) {
       showError(error);
     } finally {
       if (generation === state.generation) {
-        byId("choose-media").disabled = false;
+        state.uploadBusy = false;
         byId("media-input").disabled = false;
+        button.textContent = "Загрузить и транскрибировать";
+        if (uploadedJob) form.reset();
         updateSelectedMedia();
       }
     }
@@ -1032,8 +1095,23 @@
 
   byId("show-login").addEventListener("click", () => authMode("login"));
   byId("show-register").addEventListener("click", () => authMode("register"));
-  byId("choose-media").addEventListener("click", () => byId("media-input").click());
+  document.querySelectorAll("#auth-panel [role='tab']").forEach((tab, index, tabs) => {
+    tab.addEventListener("keydown", (event) => {
+      const moves = {
+        ArrowLeft: -1,
+        ArrowRight: 1,
+        Home: -index,
+        End: tabs.length - index - 1,
+      };
+      if (!(event.key in moves)) return;
+      event.preventDefault();
+      const next = tabs[(index + moves[event.key] + tabs.length) % tabs.length];
+      next.focus();
+      authMode(next.id === "show-login" ? "login" : "register");
+    });
+  });
   byId("media-input").addEventListener("change", updateSelectedMedia);
+  byId("refresh-jobs-button").addEventListener("click", () => loadJobs().catch(showError));
 
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", async () => {

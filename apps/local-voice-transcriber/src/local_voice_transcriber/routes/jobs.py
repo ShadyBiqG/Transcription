@@ -6,6 +6,8 @@ import base64
 import binascii
 import json
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -20,8 +22,297 @@ from ..vocabulary.suggestions import suggest_for_revision
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
 _MAX_UPLOAD_BYTES = 512 * 1024 * 1024
-_WEBM_SIGNATURE = b"\x1a\x45\xdf\xa3"
+_SIGNATURE_WINDOW_BYTES = 64 * 1024
+_MAX_ID3_TAG_BYTES = 16 * 1024 * 1024
 _UPLOAD_FILE = File(...)
+
+
+@dataclass(frozen=True)
+class _MediaFormat:
+    """Разрешённый исходный контейнер и его безопасный HTTP-тип."""
+
+    extension: str
+    media_type: str
+    signature_matches: Callable[[bytes, int], bool]
+
+
+def _ebml_vint_width(first_byte: int) -> int | None:
+    for width in range(1, 9):
+        if first_byte & (0x80 >> (width - 1)):
+            return width
+    return None
+
+
+def _read_ebml_size(signature: bytes, offset: int) -> tuple[int | None, int] | None:
+    if offset >= len(signature):
+        return None
+    width = _ebml_vint_width(signature[offset])
+    if width is None or offset + width > len(signature):
+        return None
+    value = signature[offset] & (0xFF >> width)
+    for index in range(1, width):
+        value = value << 8 | signature[offset + index]
+    # Все единицы в VINT означают неизвестный размер. Он допустим для Segment,
+    # но не для заголовка EBML и его вложенных полей.
+    unknown_size = (1 << (7 * width)) - 1
+    return (None if value == unknown_size else value), width
+
+
+def _read_ebml_element_id(signature: bytes, offset: int) -> tuple[bytes, int] | None:
+    if offset >= len(signature):
+        return None
+    width = _ebml_vint_width(signature[offset])
+    if width is None or offset + width > len(signature):
+        return None
+    return signature[offset : offset + width], width
+
+
+def _webm_ebml_header_end(signature: bytes) -> int | None:
+    if not signature.startswith(b"\x1a\x45\xdf\xa3"):
+        return None
+    header_size = _read_ebml_size(signature, 4)
+    if header_size is None or header_size[0] is None:
+        return None
+    length, width = header_size
+    position = 4 + width
+    header_end = position + length
+    if header_end > len(signature):
+        return None
+    has_webm_doc_type = False
+    while position < header_end:
+        element_id = _read_ebml_element_id(signature, position)
+        if element_id is None:
+            return None
+        identifier, identifier_width = element_id
+        size_info = _read_ebml_size(signature, position + identifier_width)
+        if size_info is None or size_info[0] is None:
+            return None
+        size, size_width = size_info
+        payload_start = position + identifier_width + size_width
+        payload_end = payload_start + size
+        if payload_end > header_end:
+            return None
+        if identifier == b"\x42\x82" and signature[payload_start:payload_end] == b"webm":
+            has_webm_doc_type = True
+        position = payload_end
+    return header_end if has_webm_doc_type else None
+
+
+def _is_webm(signature: bytes, _total_size: int) -> bool:
+    # WebM использует полноценный EBML-заголовок с DocType и Segment, а не
+    # одиночный magic number, который легко добавить к произвольному файлу.
+    header_end = _webm_ebml_header_end(signature)
+    if header_end is None:
+        return False
+    position = header_end
+    while position < len(signature):
+        element_id = _read_ebml_element_id(signature, position)
+        if element_id is None:
+            return False
+        identifier, identifier_width = element_id
+        size_info = _read_ebml_size(signature, position + identifier_width)
+        if size_info is None:
+            return False
+        size, size_width = size_info
+        if identifier == b"\x18\x53\x80\x67":
+            return True
+        if size is None:
+            return False
+        position += identifier_width + size_width + size
+    return False
+
+
+def _is_mp3_frame_header(signature: bytes, offset: int = 0) -> bool:
+    if offset + 4 > len(signature) or signature[offset] != 0xFF:
+        return False
+    second, third = signature[offset + 1], signature[offset + 2]
+    version = (second >> 3) & 0b11
+    layer = (second >> 1) & 0b11
+    bitrate_index = third >> 4
+    sample_rate_index = (third >> 2) & 0b11
+    return (
+        second & 0xE0 == 0xE0
+        and version != 0b01
+        and layer != 0
+        and bitrate_index not in {0, 0b1111}
+        and sample_rate_index != 0b11
+    )
+
+
+def _is_mp3(signature: bytes, total_size: int) -> bool:
+    if not signature.startswith(b"ID3"):
+        return _is_mp3_frame_header(signature)
+    if len(signature) < 10 or signature[3] not in {2, 3, 4}:
+        return False
+    major_version, flags = signature[3], signature[5]
+    if (major_version == 2 and flags != 0) or (major_version == 3 and flags & 0x1F):
+        return False
+    if major_version == 4 and flags & 0x0F:
+        return False
+    encoded_size = signature[6:10]
+    if any(value & 0x80 for value in encoded_size):
+        return False
+    tag_size = sum(value << (7 * (3 - index)) for index, value in enumerate(encoded_size))
+    if tag_size > _MAX_ID3_TAG_BYTES:
+        return False
+    frame_offset = 10 + tag_size
+    if major_version == 4 and flags & 0x10:
+        frame_offset += 10
+    if frame_offset + 4 > len(signature):
+        # Не загружаем мегабайтные ID3-обложки целиком только ради проверки. Если
+        # frame header за пределами окна, полная запись всё же должна содержать
+        # как минимум четыре байта после корректно объявленного tag.
+        return total_size >= frame_offset + 4
+    return _is_mp3_frame_header(signature, frame_offset)
+
+
+def _is_wav(signature: bytes, _total_size: int) -> bool:
+    return len(signature) >= 12 and signature[:4] == b"RIFF" and signature[8:12] == b"WAVE"
+
+
+def _is_aac(signature: bytes, _total_size: int) -> bool:
+    return signature.startswith(b"ADIF") or (
+        len(signature) >= 2 and signature[0] == 0xFF and signature[1] & 0xF6 == 0xF0
+    )
+
+
+def _ogg_crc32(page: bytes) -> int:
+    """Вычисляет определённый Ogg побитовый CRC страницы с нулевым checksum полем."""
+
+    value = 0
+    for byte in page:
+        value ^= byte << 24
+        for _ in range(8):
+            value = (value << 1) ^ (0x04C11DB7 if value & 0x80000000 else 0)
+            value &= 0xFFFFFFFF
+    return value
+
+
+def _read_ogg_first_page(signature: bytes) -> tuple[int, int, bytes, tuple[int, ...]] | None:
+    if len(signature) < 27 or signature[:4] != b"OggS" or signature[4] != 0:
+        return None
+    header_type = signature[5]
+    if header_type & ~0x07:
+        return None
+    sequence = int.from_bytes(signature[18:22], byteorder="little")
+    segment_count = signature[26]
+    table_start = 27
+    body_start = table_start + segment_count
+    if segment_count == 0 or body_start > len(signature):
+        return None
+    lacing_values = tuple(signature[table_start:body_start])
+    body_end = body_start + sum(lacing_values)
+    if body_end > len(signature):
+        return None
+    checksum = int.from_bytes(signature[22:26], byteorder="little")
+    page = bytearray(signature[:body_end])
+    page[22:26] = b"\x00" * 4
+    if checksum == 0 or checksum != _ogg_crc32(page):
+        return None
+    return header_type, sequence, signature[body_start:body_end], lacing_values
+
+
+def _first_ogg_packet(body: bytes, lacing_values: tuple[int, ...]) -> bytes | None:
+    packet_end = 0
+    for lacing_value in lacing_values:
+        packet_end += lacing_value
+        if lacing_value < 255:
+            return body[:packet_end]
+    return None
+
+
+def _is_ogg(signature: bytes, _total_size: int) -> bool:
+    return _read_ogg_first_page(signature) is not None
+
+
+def _is_opus_head(packet: bytes) -> bool:
+    if len(packet) < 19 or packet[:8] != b"OpusHead" or packet[8] != 1 or packet[9] == 0:
+        return False
+    channel_count = packet[9]
+    mapping_family = packet[18]
+    if mapping_family == 0:
+        return len(packet) == 19
+    if len(packet) != 21 + channel_count:
+        return False
+    stream_count, coupled_count = packet[19], packet[20]
+    if stream_count == 0 or coupled_count > stream_count:
+        return False
+    return all(
+        channel_map == 0xFF or channel_map < stream_count + coupled_count
+        for channel_map in packet[21:]
+    )
+
+
+def _is_opus(signature: bytes, _total_size: int) -> bool:
+    page = _read_ogg_first_page(signature)
+    if page is None:
+        return False
+    header_type, sequence, body, lacing_values = page
+    if header_type & 0b11 != 0b10 or sequence != 0:
+        return False
+    packet = _first_ogg_packet(body, lacing_values)
+    return packet is not None and _is_opus_head(packet)
+
+
+def _iso_base_media_brand(signature: bytes) -> bytes | None:
+    if len(signature) < 12 or signature[4:8] != b"ftyp":
+        return None
+    # ftyp всегда занимает как минимум 8 байт: длину и тип box.
+    if int.from_bytes(signature[:4], byteorder="big") < 8:
+        return None
+    return signature[8:12]
+
+
+_GENERIC_ISO_BASE_MEDIA_BRANDS = {
+    b"isom",
+    b"iso2",
+    b"mp41",
+    b"mp42",
+    b"avc1",
+    b"dash",
+    b"MSNV",
+    b"3gp4",
+    b"3gp5",
+    b"3g2a",
+    b"3g2b",
+    b"F4V ",
+    b"f4v ",
+    b"mp71",
+}
+
+
+def _is_m4a(signature: bytes, _total_size: int) -> bool:
+    # Некоторые рекордеры записывают m4a с общим ISO brand (например, isom/mp42),
+    # а не M4A. В обоих случаях FFmpeg безопасно проверит и извлечёт аудиодорожку.
+    return _iso_base_media_brand(signature) in {
+        b"M4A ",
+        b"M4B ",
+        b"M4P ",
+        b"f4a ",
+        b"F4A ",
+        *_GENERIC_ISO_BASE_MEDIA_BRANDS,
+    }
+
+
+def _is_mp4(signature: bytes, _total_size: int) -> bool:
+    return _iso_base_media_brand(signature) in _GENERIC_ISO_BASE_MEDIA_BRANDS
+
+
+def _is_mov(signature: bytes, _total_size: int) -> bool:
+    return _iso_base_media_brand(signature) == b"qt  "
+
+
+_MEDIA_FORMATS: dict[str, _MediaFormat] = {
+    ".webm": _MediaFormat(".webm", "video/webm", _is_webm),
+    ".mp3": _MediaFormat(".mp3", "audio/mpeg", _is_mp3),
+    ".wav": _MediaFormat(".wav", "audio/wav", _is_wav),
+    ".m4a": _MediaFormat(".m4a", "audio/mp4", _is_m4a),
+    ".aac": _MediaFormat(".aac", "audio/aac", _is_aac),
+    ".ogg": _MediaFormat(".ogg", "audio/ogg", _is_ogg),
+    ".opus": _MediaFormat(".opus", "audio/ogg", _is_opus),
+    ".mp4": _MediaFormat(".mp4", "video/mp4", _is_mp4),
+    ".mov": _MediaFormat(".mov", "video/quicktime", _is_mov),
+}
 
 
 def _repository(request: Request) -> JobRepository:
@@ -95,15 +386,47 @@ def _find_owned_job(repository: JobRepository, job_id: str, owner_id: str) -> Jo
         raise ApiError(404, "not_found", "Задание не найдено") from error
 
 
-async def _save_upload(upload: UploadFile, destination: Path) -> None:
-    """Сохраняет upload потоково, проверяя EBML-сигнатуру и лимит размера."""
+def _source_metadata(filename: str | None) -> tuple[str, _MediaFormat]:
+    """Возвращает безопасное отображаемое имя и формат, заданный расширением."""
 
-    if not upload.filename or Path(upload.filename).suffix.lower() != ".webm":
-        raise ApiError(422, "unsupported_media", "Разрешены только файлы .webm")
-    destination.parent.mkdir(parents=True, exist_ok=False)
+    if not filename:
+        raise ApiError(422, "unsupported_media", "Укажите имя поддерживаемого медиафайла")
+    # UploadFile может содержать путь из клиента. Убираем оба варианта разделителя,
+    # в том числе когда клиент и сервер работают на разных ОС.
+    candidate = Path(filename.replace("\\", "/")).name
+    candidate = "".join(
+        character for character in candidate if character >= " " and character != "\x7f"
+    )
+    candidate = candidate.strip()
+    suffix = Path(candidate).suffix.lower()
+    media_format = _MEDIA_FORMATS.get(suffix)
+    if media_format is None:
+        extensions = ", ".join(_MEDIA_FORMATS)
+        raise ApiError(422, "unsupported_media", f"Поддерживаются файлы: {extensions}")
+    stem = Path(candidate).stem.strip(" .")
+    if not stem:
+        raise ApiError(422, "invalid_media", "Имя медиафайла некорректно")
+    # Имя никогда не становится путём на диске, но ограничение защищает БД и HTTP-заголовок.
+    return f"{stem[:240]}{media_format.extension}", media_format
+
+
+def _discard_partial_upload(destination: Path) -> None:
+    destination.unlink(missing_ok=True)
+    try:
+        destination.parent.rmdir()
+    except OSError:
+        # Каталог создаётся исключительно для этой загрузки. Если диск или ОС не
+        # дали его удалить, повторная загрузка всё равно получит новый UUID job.
+        pass
+
+
+async def _save_upload(upload: UploadFile, destination: Path, media_format: _MediaFormat) -> None:
+    """Потоково сохраняет upload, проверяя размер и сигнатуру выбранного контейнера."""
+
     written = 0
     signature = b""
     try:
+        destination.parent.mkdir(parents=True, exist_ok=False)
         with destination.open("xb") as output:
             while chunk := await upload.read(1024 * 1024):
                 written += len(chunk)
@@ -113,19 +436,21 @@ async def _save_upload(upload: UploadFile, destination: Path) -> None:
                         "upload_too_large",
                         "Размер файла превышает допустимый лимит",
                     )
-                if len(signature) < len(_WEBM_SIGNATURE):
-                    signature += chunk[: len(_WEBM_SIGNATURE) - len(signature)]
+                if len(signature) < _SIGNATURE_WINDOW_BYTES:
+                    signature += chunk[: _SIGNATURE_WINDOW_BYTES - len(signature)]
                 output.write(chunk)
-    except ApiError:
-        destination.unlink(missing_ok=True)
-        destination.parent.rmdir()
+    except Exception:
+        _discard_partial_upload(destination)
         raise
     finally:
         await upload.close()
-    if written < len(_WEBM_SIGNATURE) or signature != _WEBM_SIGNATURE:
-        destination.unlink(missing_ok=True)
-        destination.parent.rmdir()
-        raise ApiError(422, "invalid_media", "Файл не имеет ожидаемой сигнатуры WebM")
+    if written == 0 or not media_format.signature_matches(signature, written):
+        _discard_partial_upload(destination)
+        raise ApiError(
+            422,
+            "invalid_media",
+            f"Содержимое файла не соответствует формату {media_format.extension}",
+        )
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -139,18 +464,22 @@ async def create_job(
     repository = _repository(request)
     settings = request.app.state.settings
     job_id = str(uuid4())
-    source_path = settings.data_dir / "jobs" / job_id / "source.webm"
-    await _save_upload(media, source_path)
+    try:
+        source_name, media_format = _source_metadata(media.filename)
+    except ApiError:
+        await media.close()
+        raise
+    source_path = settings.data_dir / "jobs" / job_id / f"source{media_format.extension}"
+    await _save_upload(media, source_path, media_format)
     try:
         job = repository.create_job(
             job_id=job_id,
             owner_id=session.user_id,
-            source_name=Path(media.filename or "recording.webm").name,
+            source_name=source_name,
             source_path=str(source_path),
         )
     except Exception:
-        source_path.unlink(missing_ok=True)
-        source_path.parent.rmdir()
+        _discard_partial_upload(source_path)
         raise
     return {"job": _job_projection(job)}
 
@@ -274,7 +603,10 @@ def get_audio(request: Request, job_id: str, session: SessionDependency) -> File
     source_path = Path(job.source_path)
     if not source_path.is_file():
         raise ApiError(404, "not_found", "Аудиофайл не найден")
-    return FileResponse(source_path, media_type="video/webm", filename=job.source_name)
+    media_format = _MEDIA_FORMATS.get(source_path.suffix.lower())
+    if media_format is None:
+        raise ApiError(404, "not_found", "Формат исходного медиа недоступен")
+    return FileResponse(source_path, media_type=media_format.media_type, filename=job.source_name)
 
 
 @router.get("/{job_id}/source")

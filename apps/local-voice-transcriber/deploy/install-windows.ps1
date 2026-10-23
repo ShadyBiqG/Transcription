@@ -126,6 +126,32 @@ function Test-ActiveAdministrator([string]$PythonPath) {
     }
 }
 
+function Assert-InstalledInterfaceAssets([string]$PythonPath, [string]$ApplicationRoot) {
+    $verificationProgram = @'
+from pathlib import Path
+import sys
+import local_voice_transcriber
+
+source_root = Path(sys.argv[1]).resolve() / "src" / "local_voice_transcriber" / "static"
+installed_root = Path(local_voice_transcriber.__file__).resolve().parent / "static"
+names = ("index.html", "app.js", "styles.css")
+mismatches = [
+    name for name in names
+    if not (source_root / name).is_file()
+    or not (installed_root / name).is_file()
+    or (source_root / name).read_bytes() != (installed_root / name).read_bytes()
+]
+if mismatches:
+    raise SystemExit("Файлы интерфейса отличаются: " + ", ".join(mismatches))
+print("Файлы интерфейса проверены.")
+'@
+    $detail = & $PythonPath -I -X utf8 -c $verificationProgram $ApplicationRoot 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Установленные файлы интерфейса не совпадают с обновлёнными исходниками. $($detail | Out-String)"
+    }
+    Write-Host (($detail | Out-String).Trim())
+}
+
 function Get-WindowsDescription() {
     try {
         $operatingSystem = Get-CimInstance -ClassName Win32_OperatingSystem
@@ -217,7 +243,9 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Could not create the candidate virtual environment."
     }
-    & $uv sync --project $appRoot --locked --no-dev --no-editable --link-mode copy --python $managedPython --no-python-downloads
+    & $uv sync --project $appRoot --locked --no-dev --no-editable --link-mode copy `
+        --reinstall-package local-voice-transcriber --refresh-package local-voice-transcriber `
+        --python $managedPython --no-python-downloads
     if ($LASTEXITCODE -ne 0) {
         throw "Could not install the application dependencies."
     }
@@ -233,6 +261,7 @@ $applicationLauncher = Join-Path $virtualEnvironmentPath "Scripts\python.exe"
 if ($LASTEXITCODE -ne 0) {
     throw "The installed candidate package cannot be imported by the exact service Python."
 }
+Assert-InstalledInterfaceAssets $applicationLauncher $appRoot
 
 if (-not (Test-OnnxRuntimeImport $applicationLauncher)) {
     $runtimePrerequisiteInstaller = Join-Path $PSScriptRoot "install-onnxruntime-prerequisite.ps1"

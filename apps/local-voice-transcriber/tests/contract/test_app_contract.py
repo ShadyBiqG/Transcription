@@ -194,3 +194,9 @@ def test_static_index_is_public_without_api_secrets(client: TestClient) -> None:
     assert response.status_code == 200
     assert "Transcription Next" in response.text
     assert "local_voice_transcriber_session" not in response.text
+    assert response.headers["cache-control"] == "no-store, max-age=0"
+
+    script = client.get("/static/app.js")
+
+    assert script.status_code == 200
+    assert script.headers["cache-control"] == "no-store, max-age=0"

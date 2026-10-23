@@ -4,27 +4,27 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Transcription Next</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/styles.css?v=20261023-scriberr-1">
   </head>
   <body>
     <main class="shell">
       <header class="topbar">
-        <div><p class="eyebrow">Локальная обработка</p><h1>Transcription Next</h1></div>
+        <div class="brand"><span class="brand-mark" aria-hidden="true">⌁</span><div><p class="eyebrow">Локальная обработка</p><h1>Transcription Next</h1></div></div>
         <div class="session" id="session-state">Проверяем сессию…</div>
       </header>
       <section class="notice" id="notice" hidden aria-live="polite"></section>
       <section class="auth-panel card" id="auth-panel" aria-label="Доступ к сервису">
-        <nav class="auth-tabs" aria-label="Вход и регистрация">
-          <button type="button" class="active" id="show-login" aria-controls="login-form" aria-pressed="true">Войти</button>
-          <button type="button" id="show-register" aria-controls="register-form" aria-pressed="false">Зарегистрироваться</button>
+        <nav class="auth-tabs" aria-label="Вход и регистрация" role="tablist">
+          <button type="button" class="active" id="show-login" role="tab" aria-controls="login-form" aria-selected="true" tabindex="0">Войти</button>
+          <button type="button" id="show-register" role="tab" aria-controls="register-form" aria-selected="false" tabindex="-1">Зарегистрироваться</button>
         </nav>
-        <form id="login-form">
+        <form id="login-form" role="tabpanel" aria-labelledby="show-login">
           <h2>Войти</h2>
           <label>E-mail или логин<input name="login" autocomplete="username" required maxlength="254"></label>
           <label>Пароль<input name="password" type="password" autocomplete="current-password" required></label>
           <button type="submit">Войти</button>
         </form>
-        <form id="register-form" hidden>
+        <form id="register-form" role="tabpanel" aria-labelledby="show-register" hidden>
           <h2>Создать учётную запись</h2>
           <p class="muted">Подтверждение почты появится в отдельном выпуске.</p>
           <label>E-mail или логин<input name="login" autocomplete="username" required maxlength="254"></label>
@@ -34,7 +34,7 @@
       </section>
       <section id="workspace" hidden>
         <nav class="tabs" aria-label="Разделы">
-          <button class="tab active" data-view="jobs">Мои записи</button>
+          <button class="tab active" data-view="jobs" aria-current="page">Мои записи</button>
           <button class="tab" data-view="profiles">Голосовые профили</button>
           <button class="tab" data-view="vocabulary">Словарь</button>
           <button class="tab" data-view="editor">Редактор</button>
@@ -43,15 +43,23 @@
         </nav>
         <section class="view active" id="jobs-view">
           <div class="view-header">
-            <div><p class="eyebrow">Приватная очередь</p><h2>Мои записи</h2></div>
-            <form id="upload-form" class="upload-form">
-              <input id="media-input" name="media" type="file" accept="video/webm,audio/webm,.webm" required hidden>
-              <button type="button" id="choose-media" class="secondary">Загрузить запись</button>
-              <span id="selected-media" class="muted" aria-live="polite">Файл .webm не выбран</span>
-              <button type="submit" id="add-job-button" disabled>Добавить в список</button>
-            </form>
+            <div><p class="eyebrow">Личная рабочая область</p><h2>Записи встреч</h2><p class="muted">Каждая запись видна только вам. Готовую транскрипцию можно открыть и отредактировать.</p></div>
+            <button type="button" id="refresh-jobs-button" class="secondary">Обновить список</button>
           </div>
-          <p class="muted">Сначала добавьте файл в список, затем нажмите «Транскрибировать» у записи.</p>
+          <form id="upload-form" class="upload-form card">
+            <div class="upload-heading"><span class="step" aria-hidden="true">1</span><div><h3>Новая транскрипция</h3><p class="muted">Добавьте запись — она сразу попадёт в личную очередь обработки.</p></div></div>
+            <label class="upload-file-label" for="media-input">
+              <span class="upload-icon" aria-hidden="true">↥</span>
+              <span class="upload-copy"><strong>Выберите запись встречи</strong><small>Поддерживаются .webm, .mp3, .wav, .m4a, .aac, .ogg, .opus, .mp4 и .mov</small></span>
+              <span class="choose-file">Выбрать файл</span>
+              <input id="media-input" name="media" type="file" accept=".webm,.mp3,.wav,.m4a,.aac,.ogg,.opus,.mp4,.mov,video/webm,audio/webm,audio/mpeg,audio/wav,audio/mp4,audio/aac,audio/ogg,video/mp4,video/quicktime" required>
+            </label>
+            <div class="upload-actions">
+              <div><span id="selected-media" class="selected-media" aria-live="polite">Файл не выбран</span><p class="upload-hint">Файл не отправляется во внешние сервисы.</p></div>
+              <button type="submit" id="upload-and-start-button" disabled>Загрузить и транскрибировать</button>
+            </div>
+          </form>
+          <div class="list-heading"><div><p class="eyebrow">Очередь и результаты</p><h3>Мои записи</h3></div></div>
           <div id="jobs-list" class="job-list" aria-live="polite"></div>
         </section>
         <section class="view" id="profiles-view">
@@ -89,6 +97,6 @@
         </section>
       </section>
     </main>
-    <script src="/static/app.js" defer></script>
+    <script src="/static/app.js?v=20261023-scriberr-1" defer></script>
   </body>
 </html>

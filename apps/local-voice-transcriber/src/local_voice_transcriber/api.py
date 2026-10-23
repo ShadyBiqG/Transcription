@@ -293,6 +293,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
         )
 
+    @app.middleware("http")
+    async def prevent_stale_interface_cache(request: Request, call_next):
+        """Не даёт браузеру использовать устаревшие HTML, CSS и JavaScript после обновления."""
+
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+        return response
+
     def public_health(*, require_worker: bool = False) -> JSONResponse:
         payload, is_ready = health_payload(
             application_settings,

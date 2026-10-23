@@ -229,6 +229,31 @@ def test_ffmpeg_normalizer_rejects_media_outside_candidate_jobs_root(tmp_path: P
         normalizer.normalize(outside, jobs_root / "job-1" / "normalized.wav")
 
 
+@pytest.mark.parametrize(
+    "suffix", [".webm", ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".mp4", ".mov"]
+)
+def test_ffmpeg_normalizer_accepts_every_verified_upload_extension(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suffix: str
+) -> None:
+    jobs_root = tmp_path / "jobs"
+    source = jobs_root / "job-1" / f"source{suffix}"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"verified-container")
+    executable = tmp_path / "ffmpeg.exe"
+    executable.write_bytes(b"not-executed")
+    destination = jobs_root / "job-1" / "runs" / "run-1" / "normalized.wav"
+
+    def fake_run(command: list[str], **kwargs: object) -> None:
+        assert command[0] == str(executable)
+        assert command[command.index("-i") + 1] == str(source)
+        Path(command[-1]).write_bytes(b"RIFF")
+
+    monkeypatch.setattr("local_voice_transcriber.jobs.media.subprocess.run", fake_run)
+    FfmpegNormalizer(executable, jobs_root=jobs_root).normalize(source, destination)
+
+    assert destination.read_bytes() == b"RIFF"
+
+
 def claimed_run(tmp_path: Path):
     jobs_root = tmp_path / "jobs"
     source = jobs_root / "job-1" / "source.webm"
