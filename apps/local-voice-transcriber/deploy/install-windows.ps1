@@ -126,27 +126,27 @@ function Test-ActiveAdministrator([string]$PythonPath) {
     }
 }
 
-function Assert-InstalledInterfaceAssets([string]$PythonPath, [string]$ApplicationRoot) {
-    $verificationProgram = @'
-from pathlib import Path
-import sys
-import local_voice_transcriber
+function Assert-InstalledInterfaceAssets(
+    [string]$PythonPath,
+    [string]$ApplicationRoot,
+    [string]$VerifierPath
+) {
+    if (-not (Test-Path -LiteralPath $VerifierPath -PathType Leaf)) {
+        throw "The installed interface verifier was not found: $VerifierPath"
+    }
 
-source_root = Path(sys.argv[1]).resolve() / "src" / "local_voice_transcriber" / "static"
-installed_root = Path(local_voice_transcriber.__file__).resolve().parent / "static"
-names = ("index.html", "app.js", "styles.css")
-mismatches = [
-    name for name in names
-    if not (source_root / name).is_file()
-    or not (installed_root / name).is_file()
-    or (source_root / name).read_bytes() != (installed_root / name).read_bytes()
-]
-if mismatches:
-    raise SystemExit("Installed interface files differ: " + ", ".join(mismatches))
-print("Installed interface files verified.")
-'@
-    $detail = & $PythonPath -I -X utf8 -c $verificationProgram $ApplicationRoot 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        # Preserve the verifier output so a failed external program can be reported clearly.
+        $ErrorActionPreference = "Continue"
+        $detail = & $PythonPath -I -X utf8 $VerifierPath --application-root $ApplicationRoot 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+
+    if ($exitCode -ne 0) {
         throw "Installed interface files do not match the updated source files. $($detail | Out-String)"
     }
     Write-Host (($detail | Out-String).Trim())
@@ -261,7 +261,8 @@ $applicationLauncher = Join-Path $virtualEnvironmentPath "Scripts\python.exe"
 if ($LASTEXITCODE -ne 0) {
     throw "The installed candidate package cannot be imported by the exact service Python."
 }
-Assert-InstalledInterfaceAssets $applicationLauncher $appRoot
+$interfaceAssetsVerifier = Join-Path $PSScriptRoot "verify-installed-interface-assets.py"
+Assert-InstalledInterfaceAssets $applicationLauncher $appRoot $interfaceAssetsVerifier
 
 if (-not (Test-OnnxRuntimeImport $applicationLauncher)) {
     $runtimePrerequisiteInstaller = Join-Path $PSScriptRoot "install-onnxruntime-prerequisite.ps1"
