@@ -241,7 +241,10 @@ button { padding: .58rem .75rem; border-radius: .62rem; }
 .speakers-panel { display: grid; gap: 1rem; max-height: inherit; overflow: auto; padding: 1.25rem; border: 1px solid #e1e7ef; border-radius: 1rem; background: #fff; }
 .speakers-dialog-heading { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
 .speakers-dialog-heading h2 { margin-bottom: 0; }
-.speaker-picker { margin-top: .3rem; }
+.speaker-local-group { display: grid; gap: .35rem; padding: .75rem; border: 1px solid #e1e7ef; border-radius: .7rem; background: #fbfcfe; }
+.speaker-local-group h3 { margin: 0; font-size: .95rem; }
+.speaker-local-group-controls { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: .5rem; align-items: center; }
+.speaker-local-group-summary { margin: 0; color: #526174; font-size: .88rem; text-align: center; }
 .speaker-metrics { margin: -.45rem 0 0; color: #66758a; font-size: .88rem; }
 .speaker-identity { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .55rem; }
 .speaker-identity button { white-space: nowrap; }
@@ -254,8 +257,10 @@ button { padding: .58rem .75rem; border-radius: .62rem; }
 .speaker-sample button { padding: .38rem .55rem; font-size: .8rem; }
 .speaker-merge { border-top: 1px solid #e7ecf2; padding-top: .8rem; }
 .speaker-merge > summary { cursor: pointer; color: #526174; font-size: .9rem; font-weight: 700; }
-.speaker-merge > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .55rem; align-items: center; margin-top: .65rem; }
-.speaker-merge > div > div { display: flex; justify-content: space-between; align-items: center; gap: .5rem; font-size: .84rem; color: #66758a; }
+.speaker-merge > div { display: grid; gap: .55rem; margin-top: .65rem; }
+.speaker-merge > div > p { margin: 0; color: #66758a; font-size: .84rem; }
+.speaker-merge-choices { display: grid; gap: .45rem; }
+.speaker-merge-choices button { width: 100%; text-align: left; }
 .speaker-merge button { padding: .42rem .55rem; font-size: .82rem; }
 
 @media (max-width: 720px) {
@@ -266,5 +271,4 @@ button { padding: .58rem .75rem; border-radius: .62rem; }
   .speaker-identity button { width: 100%; }
   .speaker-sample { grid-template-columns: 1fr auto; }
   .speaker-sample p, .speaker-sample strong { grid-column: 1 / -1; }
-  .speaker-merge > div { grid-template-columns: 1fr; }
 }

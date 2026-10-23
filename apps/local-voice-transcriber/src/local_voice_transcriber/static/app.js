@@ -131,9 +131,9 @@
     state.jobs = [];
     clearTimeout(state.jobsTimer);
     clearEditor();
-    ["jobs-list", "profiles-list", "vocabulary-list", "admin-users", "admin-overview"].forEach((id) => byId(id).replaceChildren());
-    ["login-form", "register-form", "upload-form", "profile-form", "vocabulary-form"].forEach((id) => byId(id).reset());
-    document.querySelectorAll("#profile-form button, #vocabulary-form button, #admin-retry-index").forEach((button) => { button.disabled = false; });
+    ["jobs-list", "vocabulary-list", "admin-users", "admin-overview"].forEach((id) => byId(id).replaceChildren());
+    ["login-form", "register-form", "upload-form", "vocabulary-form"].forEach((id) => byId(id).reset());
+    document.querySelectorAll("#vocabulary-form button, #admin-retry-index").forEach((button) => { button.disabled = false; });
     updateSelectedMedia();
     byId("media-input").disabled = false;
     byId("notice").hidden = true;
@@ -203,7 +203,7 @@
   }
 
   function activateView(name) {
-    if (["admin", "profiles"].includes(name) && state.user?.role !== "admin") name = "jobs";
+    if (name === "admin" && state.user?.role !== "admin") name = "jobs";
     document.querySelectorAll(".view").forEach((item) => {
       item.classList.toggle("active", item.id === name + "-view");
     });
@@ -384,25 +384,6 @@
     });
   }
 
-  function renderProfiles(items) {
-    const list = byId("profiles-list");
-    list.replaceChildren();
-    if (!items.length) {
-      list.append(text("p", "Подтверждённых профилей пока нет."));
-      return;
-    }
-    items.forEach((profile) => {
-      const row = document.createElement("article");
-      row.className = "profile";
-      const aliases = profile.aliases?.length ? " · " + profile.aliases.join(", ") : "";
-      row.append(
-        text("strong", profile.display_name),
-        text("small", (profile.active_sample_count || 0) + " образцов · " + profile.state + aliases),
-      );
-      list.append(row);
-    });
-  }
-
   function renderVocabulary(items) {
     const list = byId("vocabulary-list");
     list.replaceChildren();
@@ -499,14 +480,6 @@
           job.status === "uploaded" ? "Транскрибировать" : "Повторить обработку";
       }
     }
-  }
-
-  async function loadProfiles() {
-    const generation = state.generation;
-    const data = await request("/voice-profiles");
-    requireGeneration(generation);
-    renderProfiles(data.items || []);
-    return data.items || [];
   }
 
   async function loadVocabulary() {
@@ -880,22 +853,44 @@
     editor.selectedGroupId = groupId;
     const group = editor.groupById.get(groupId);
     const context = groupSegments(editor, groupId);
-    const pickerLabel = text("label", "Группа говорящего");
-    const picker = document.createElement("select");
-    picker.className = "speaker-picker";
-    picker.setAttribute("aria-label", "Выбрать группу говорящего");
-    groups.forEach((item) => {
-      const option = text("option", groupDisplayLabel(editor, item.speaker_group_id) + " · " + groupSegments(editor, item.speaker_group_id).length + " реплик");
-      option.value = item.speaker_group_id;
-      option.selected = item.speaker_group_id === groupId;
-      picker.append(option);
-    });
-    picker.addEventListener("change", () => {
-      editor.selectedGroupId = picker.value;
+    const groupIndex = groups.findIndex((item) => item.speaker_group_id === groupId);
+    const selectLocalGroup = (nextGroupId) => {
+      editor.selectedGroupId = nextGroupId;
       renderSpeakerPanel();
       renderTranscript();
+    };
+    const groupSwitcher = document.createElement("section");
+    groupSwitcher.className = "speaker-local-group";
+    groupSwitcher.append(text("h3", "Группа " + (groupIndex + 1) + " из " + groups.length));
+    const switcherBody = document.createElement("div");
+    switcherBody.className = "speaker-local-group-controls";
+    const previous = text("button", "←");
+    previous.type = "button";
+    previous.className = "secondary icon-button";
+    previous.disabled = groups.length < 2;
+    previous.setAttribute("aria-label", "Предыдущая группа этой записи");
+    previous.title = "Предыдущая группа этой записи";
+    previous.addEventListener("click", () => {
+      const previousIndex = (groupIndex - 1 + groups.length) % groups.length;
+      selectLocalGroup(groups[previousIndex].speaker_group_id);
     });
-    pickerLabel.append(picker);
+    const localGroupSummary = text(
+      "p",
+      groupDisplayLabel(editor, groupId) + " · " + context.length + " реплик в этой записи",
+    );
+    localGroupSummary.className = "speaker-local-group-summary";
+    const next = text("button", "→");
+    next.type = "button";
+    next.className = "secondary icon-button";
+    next.disabled = groups.length < 2;
+    next.setAttribute("aria-label", "Следующая группа этой записи");
+    next.title = "Следующая группа этой записи";
+    next.addEventListener("click", () => {
+      const nextIndex = (groupIndex + 1) % groups.length;
+      selectLocalGroup(groups[nextIndex].speaker_group_id);
+    });
+    switcherBody.append(previous, localGroupSummary, next);
+    groupSwitcher.append(switcherBody);
     const metrics = text("p", context.length + " реплик · " + formatTime(groupDuration(editor, groupId)) + " речи");
     metrics.className = "speaker-metrics";
     const name = document.createElement("input");
@@ -915,7 +910,7 @@
     const identityRow = document.createElement("div");
     identityRow.className = "speaker-identity";
     identityRow.append(name, identity);
-    panel.append(pickerLabel, metrics, identityRow);
+    panel.append(groupSwitcher, metrics, identityRow);
     const samples = sampleSegments(editor, groupId);
     const samplesBlock = document.createElement("section");
     samplesBlock.className = "speaker-samples";
@@ -942,30 +937,38 @@
     panel.append(samplesBlock);
     const merge = document.createElement("details");
     merge.className = "speaker-merge";
-    merge.append(text("summary", "Сопоставить с другой группой"));
+    merge.append(text("summary", "Объединить локальные группы этой записи"));
     const mergeBody = document.createElement("div");
-    const target = document.createElement("select");
-    target.setAttribute("aria-label", "Группа для объединения");
-    target.append(text("option", "Выберите группу"));
-    target.options[0].value = "";
-    groups.filter((item) => item.speaker_group_id !== groupId).forEach((item) => {
-      const option = text("option", groupDisplayLabel(editor, item.speaker_group_id));
-      option.value = item.speaker_group_id;
-      target.append(option);
-    });
-    const mergeButton = text("button", "Объединить группы");
-    mergeButton.type = "button";
-    mergeButton.className = "secondary";
-    mergeButton.disabled = groups.length < 2;
-    mergeButton.addEventListener("click", () => mergeSpeakerGroup(editor, groupId, target.value, mergeButton));
-    mergeBody.append(target, mergeButton);
+    mergeBody.append(text("p", "Если это один человек, выберите вторую группу из этой же записи."));
+    if (groups.length < 2) {
+      mergeBody.append(text("p", "В этой записи других групп нет."));
+    } else {
+      const choices = document.createElement("div");
+      choices.className = "speaker-merge-choices";
+      groups.filter((item) => item.speaker_group_id !== groupId).forEach((item) => {
+        const targetPosition = groups.findIndex((candidate) => candidate.speaker_group_id === item.speaker_group_id) + 1;
+        const button = text(
+          "button",
+          "Объединить с группой " + targetPosition + " · " + groupDisplayLabel(editor, item.speaker_group_id),
+        );
+        button.type = "button";
+        button.className = "secondary";
+        button.setAttribute(
+          "aria-label",
+          "Объединить текущую группу с группой " + targetPosition + " этой записи",
+        );
+        button.addEventListener("click", () => mergeSpeakerGroup(editor, groupId, item.speaker_group_id, button));
+        choices.append(button);
+      });
+      mergeBody.append(choices);
+    }
     merge.append(mergeBody);
     panel.append(merge);
     const mergedGroups = editor.revision.groups.filter((item) => item.merged_into_group_id);
     if (mergedGroups.length) {
       const restore = document.createElement("details");
       restore.className = "speaker-merge";
-      restore.append(text("summary", "Отменить объединение (" + mergedGroups.length + ")"));
+      restore.append(text("summary", "Отменить локальное объединение (" + mergedGroups.length + ")"));
       const restoreBody = document.createElement("div");
       mergedGroups.forEach((item) => {
         const itemRow = document.createElement("div");
@@ -1365,30 +1368,6 @@
     }
   });
 
-  byId("profile-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const button = form.querySelector("button[type='submit']");
-    if (button.disabled || !state.user) return;
-    const generation = state.generation;
-    button.disabled = true;
-    try {
-      await request("/voice-profiles", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(Object.fromEntries(new FormData(form))),
-      });
-      form.reset();
-      await loadProfiles();
-      requireGeneration(generation);
-      notify("Общий профиль создан без добавления образца голоса.");
-    } catch (error) {
-      showError(error);
-    } finally {
-      if (generation === state.generation) button.disabled = false;
-    }
-  });
-
   byId("vocabulary-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -1553,7 +1532,6 @@
       if (!state.user) return;
       activateView(button.dataset.view);
       try {
-        if (button.dataset.view === "profiles") await loadProfiles();
         if (button.dataset.view === "vocabulary") await loadVocabulary();
         if (button.dataset.view === "jobs") await loadJobs();
         if (button.dataset.view === "admin") await loadAdmin();

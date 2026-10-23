@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Transcription Next</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20261023-editor-1">
+    <link rel="stylesheet" href="/static/styles.css?v=20261023-speaker-privacy-1">
   </head>
   <body>
     <main class="shell">
@@ -18,7 +18,6 @@
               <p class="session" id="session-state">Проверяем сессию…</p>
               <button type="button" class="menu-item" data-view="jobs">Записи</button>
               <button type="button" class="menu-item" data-view="vocabulary">Словарь</button>
-              <button type="button" class="menu-item admin-only" data-view="profiles" hidden>Голосовые профили</button>
               <button type="button" class="menu-item admin-only" data-view="admin" hidden>Администрирование</button>
               <hr>
               <button type="button" class="menu-item" id="logout-button">Выйти</button>
@@ -69,13 +68,6 @@
           <div class="list-heading"><div><p class="eyebrow">Очередь и результаты</p><h3>Мои записи</h3></div></div>
           <div id="jobs-list" class="job-list" aria-live="polite"></div>
         </section>
-        <section class="view" id="profiles-view">
-          <div class="view-header">
-            <div><p class="eyebrow">Общий справочник без источников</p><h2>Голосовые профили</h2></div>
-            <form id="profile-form" class="inline-form"><input name="display_name" placeholder="Имя профиля" required maxlength="120"><button type="submit">Добавить</button></form>
-          </div>
-          <div id="profiles-list" class="profile-list"></div>
-        </section>
         <section class="view" id="vocabulary-view">
           <div class="view-header">
             <div><p class="eyebrow">Общие подсказки для будущих запусков</p><h2>Словарь</h2></div>
@@ -110,6 +102,6 @@
         <div id="speaker-panel"><p class="muted">Нет выбранной записи.</p></div>
       </section>
     </dialog>
-    <script src="/static/app.js?v=20261023-editor-1" defer></script>
+    <script src="/static/app.js?v=20261023-speaker-privacy-1" defer></script>
   </body>
 </html>

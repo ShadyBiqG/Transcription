@@ -200,7 +200,8 @@ def test_static_index_is_public_without_api_secrets(client: TestClient) -> None:
     assert 'id="workspace-menu"' in response.text
     assert 'id="go-to-jobs"' in response.text
     assert 'class="menu-item" data-view="jobs">Записи</button>' in response.text
-    assert 'class="menu-item admin-only" data-view="profiles"' in response.text
+    assert 'data-view="profiles"' not in response.text
+    assert 'id="profiles-view"' not in response.text
     assert 'id="download-text-button"' in response.text
     assert 'id="open-speakers-button"' in response.text
     assert 'id="speakers-dialog"' in response.text
@@ -218,6 +219,10 @@ def test_static_index_is_public_without_api_secrets(client: TestClient) -> None:
     assert '"/identity"' in script.text
     assert '"/transcript/groups/merge"' in script.text
     assert '"/transcript/groups/unmerge"' in script.text
+    assert '"/voice-profiles"' not in script.text
+    assert "Объединить локальные группы этой записи" in script.text
+    assert "Сопоставить с другой группой" not in script.text
+    assert "speaker-picker" not in script.text
     assert "function playSample" in script.text
     assert "function stopSamplePlayback" in script.text
     assert 'if (!player.paused) player.pause();' in script.text
