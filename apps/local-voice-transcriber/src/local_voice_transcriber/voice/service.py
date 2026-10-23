@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from uuid import uuid4
 
 from .repository import (
     ProfileState,
@@ -52,6 +53,22 @@ class VoiceDirectoryService:
             display_name=display_name,
             created_by=actor_id,
             aliases=aliases,
+        )
+
+    def resolve_or_create_active_speaker(
+        self, *, display_name: str, actor_id: str
+    ) -> SharedVoiceProfile:
+        """Привязывает ручную подпись группы к точной общей карточке.
+
+        HTTP-слой не получает список карточек и не передаёт технический
+        идентификатор. Репозиторий либо возвращает одно точное active-
+        совпадение, либо атомарно создаёт новую карточку.
+        """
+
+        return self._repository.resolve_or_create_active_speaker(
+            profile_id=str(uuid4()),
+            display_name=display_name,
+            created_by=actor_id,
         )
 
     def list_profiles(

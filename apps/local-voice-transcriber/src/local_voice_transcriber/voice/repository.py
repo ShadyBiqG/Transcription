@@ -32,6 +32,10 @@ class VoiceProfileStateError(VoiceDirectoryError):
     """Переход состояния профиля или образца недопустим."""
 
 
+class SpeakerIdentityUnavailableError(VoiceDirectoryError):
+    """Подпись совпала с недоступной или неоднозначной общей карточкой."""
+
+
 class VoiceIndexStateError(VoiceDirectoryError):
     """Нарушен порядок durable-операции с поколением индекса."""
 
@@ -359,6 +363,101 @@ class VoiceDirectoryRepository:
                 reason=None,
             )
         return self.get_shared_profile(profile_id)
+
+    def resolve_or_create_active_speaker(
+        self,
+        *,
+        profile_id: str,
+        display_name: str,
+        created_by: str,
+    ) -> SharedVoiceProfile:
+        """Возвращает точное active-совпадение подписи либо создаёт карточку.
+
+        Это намеренно не является поиском каталога: сравнение выполняется
+        только по нормализованному полному значению. ``BEGIN IMMEDIATE``
+        сериализует создание и не даёт двум одновременно сохранённым группам
+        породить две карточки одной подписи. Архивное либо неоднозначное
+        совпадение не раскрывается вызывающему пользователю.
+        """
+
+        with self._transaction() as connection:
+            return self.resolve_or_create_active_speaker_in_transaction(
+                connection,
+                profile_id=profile_id,
+                display_name=display_name,
+                created_by=created_by,
+            )
+
+    def resolve_or_create_active_speaker_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        profile_id: str,
+        display_name: str,
+        created_by: str,
+    ) -> SharedVoiceProfile:
+        """Разрешает подпись в уже открытой SQLite write-транзакции.
+
+        Этот внутренний сценарий нужен, когда создание общей карточки должно
+        быть неразрывно связано с другой записью в той же базе — например, с
+        immutable-ревизией группы редактора. Вызывающий код обязан открыть
+        ``BEGIN IMMEDIATE`` и откатить транзакцию при любой ошибке.
+        """
+
+        clean_name = _display_value(display_name, "Подпись говорящего")
+        normalized_name = _normalized(clean_name)
+        now = _utc_now()
+        matches = connection.execute(
+            """
+            SELECT profiles.id, profiles.state
+            FROM next_voice_profiles AS profiles
+            WHERE profiles.normalized_name = ?
+            ORDER BY profiles.id
+            """,
+            (normalized_name,),
+        ).fetchall()
+        if matches:
+            active_ids = {
+                str(row["id"])
+                for row in matches
+                if ProfileState(row["state"]) is ProfileState.ACTIVE
+            }
+            if len(matches) != 1 or len(active_ids) != 1:
+                raise SpeakerIdentityUnavailableError(
+                    "Подпись говорящего недоступна для назначения"
+                )
+            resolved_id = active_ids.pop()
+        else:
+            connection.execute(
+                """
+                INSERT INTO next_voice_profiles(
+                    id, display_name, normalized_name, state, created_by, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    profile_id,
+                    clean_name,
+                    normalized_name,
+                    ProfileState.ACTIVE,
+                    created_by,
+                    now,
+                    now,
+                ),
+            )
+            self._event(
+                connection,
+                profile_id=profile_id,
+                actor_id=created_by,
+                action="profile_created_from_speaker_identity",
+                reason=None,
+            )
+            resolved_id = profile_id
+        row = connection.execute(
+            self._shared_profile_query() + " WHERE profiles.id = ?", (resolved_id,)
+        ).fetchone()
+        if row is None or ProfileState(row["state"]) is ProfileState.PURGED:
+            raise VoiceProfileNotFoundError("Голосовой профиль не найден")
+        return _to_shared_profile(row)
 
     def add_alias(
         self, *, profile_id: str, alias: str, actor_id: str

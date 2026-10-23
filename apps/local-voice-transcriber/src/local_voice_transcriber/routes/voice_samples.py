@@ -27,9 +27,14 @@ _MIN_SAMPLE_DURATION_MS = 1_000
 
 
 class EnrollGroupSampleRequest(BaseModel):
-    """Явное действие пользователя: отдать группу как образец выбранному профилю."""
+    """Явное действие пользователя: отдать группу как образец её подписи.
 
-    profile_id: str = Field(min_length=1, max_length=128)
+    ``profile_id`` оставлен необязательным только для совместимости с ранним
+    клиентом. Сервер его не использует: назначение всегда берётся из текущего
+    снимка группы владельца.
+    """
+
+    profile_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 def _jobs(request: Request) -> JobRepository:
@@ -107,9 +112,17 @@ def _normalized_wav_path(request: Request, *, job: Job) -> Path:
 
 def _translate_error(error: Exception) -> ApiError:
     if isinstance(error, VoiceProfileNotFoundError):
-        return ApiError(404, "voice_profile_not_found", "Голосовой профиль не найден")
+        return ApiError(
+            409,
+            "speaker_identity_unavailable",
+            "Подпись говорящего сейчас недоступна",
+        )
     if isinstance(error, VoiceProfileStateError):
-        return ApiError(409, "voice_profile_state_conflict", str(error))
+        return ApiError(
+            409,
+            "speaker_identity_unavailable",
+            "Подпись говорящего сейчас недоступна",
+        )
     if isinstance(error, (VoiceSampleArtifactError, VoiceDirectoryError, ValueError)):
         return ApiError(422, "voice_sample_invalid", str(error))
     return ApiError(503, "voice_sample_unavailable", "Не удалось подготовить голосовой образец")
@@ -132,6 +145,9 @@ def enroll_group_sample(
     editor revision, второй создаёт из однозначной реплики protected WAV и
     ставит durable outbox-операцию для общего ZeusDB индекса.
     """
+
+    # Идентификатор из устаревшего клиента никогда не влияет на назначение.
+    del payload
 
     if (
         not request.app.state.voice_diarization_ready
@@ -158,7 +174,14 @@ def enroll_group_sample(
             "speaker_group_merged",
             "Для образца выберите итоговую, а не объединённую группу",
         )
-    request.app.state.voice_directory_service.require_active_profile(payload.profile_id)
+    if group.profile_id is None:
+        raise ApiError(
+            422,
+            "speaker_identity_required",
+            "Сначала укажите подпись говорящего для этой группы",
+        )
+    profile_id = group.profile_id
+    request.app.state.voice_directory_service.require_active_profile(profile_id)
     source_segment_id, start_ms, end_ms = _select_unambiguous_segment(
         request,
         job=job,
@@ -178,7 +201,7 @@ def enroll_group_sample(
             explicit_confirm=True,
             sample_id=sample_id,
             operation_id=str(uuid4()),
-            profile_id=payload.profile_id,
+            profile_id=profile_id,
             voice_pack_id=request.app.state.voice_pack_id,
             protected_artifact_id=sample_id,
             artifact_content_sha256=artifact.content_sha256,
@@ -194,9 +217,9 @@ def enroll_group_sample(
         raise _translate_error(error) from error
     request.app.state.database.add_audit_event(
         actor_id=session.user_id,
-        action="voice_sample_explicitly_enrolled",
-        target_type="voice_profile",
-        target_id=payload.profile_id,
+        action="speaker_sample_explicitly_enrolled",
+        target_type="speaker",
+        target_id=profile_id,
     )
     indexing_state = "active"
     try:
@@ -210,13 +233,12 @@ def enroll_group_sample(
         request.app.state.database.add_audit_event(
             actor_id=session.user_id,
             action="voice_index_reconciliation_deferred",
-            target_type="voice_profile",
-            target_id=payload.profile_id,
+            target_type="speaker",
+            target_id=profile_id,
         )
     return {
         "sample": {
             "id": enrollment.id,
-            "profile_id": enrollment.profile_id,
             "voice_pack_id": enrollment.voice_pack_id,
             "state": enrollment.state,
             "created_at": enrollment.created_at,

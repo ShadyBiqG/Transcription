@@ -61,11 +61,41 @@
   function updateSelectedMedia() {
     const file = byId("media-input").files[0];
     const supported = isSupportedMediaFile(file);
+    const form = byId("upload-form");
+    const dropzone = byId("recording-dropzone");
+    if (file && state.user) activateView("jobs");
+    form.hidden = !file;
+    dropzone.classList.toggle("has-draft", Boolean(file));
     byId("selected-media").textContent = file
       ? file.name + " · " + new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(file.size / 1024 / 1024) +
         " МБ" + (supported ? "" : " · неподдерживаемый формат")
       : "Файл не выбран";
     byId("upload-and-start-button").disabled = !file || !supported || state.uploadBusy;
+  }
+
+  function resetUploadDraft() {
+    byId("upload-form").reset();
+    updateSelectedMedia();
+  }
+
+  function selectMediaFile(file) {
+    if (!file) return;
+    const input = byId("media-input");
+    try {
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      input.files = transfer.files;
+    } catch (_) {
+      notify("Не удалось принять файл из области перетаскивания. Выберите его кнопкой «Добавить».", true);
+      return;
+    }
+    updateSelectedMedia();
+  }
+
+  function openMediaPicker() {
+    if (!state.user || state.uploadBusy) return;
+    activateView("jobs");
+    byId("media-input").click();
   }
 
   function clearEditor() {
@@ -79,8 +109,11 @@
     byId("editor-status").textContent = "Выберите готовую запись";
     byId("editor-help").textContent = "Выберите готовую запись.";
     byId("subtitle-line").textContent = "Субтитры появятся после обработки.";
+    byId("audio-help").hidden = true;
+    byId("audio-help").textContent = "";
     document.querySelector(".waveform span").style.width = "0%";
     byId("save-editor-button").disabled = true;
+    byId("download-text-button").hidden = true;
     byId("editor-conflict").hidden = true;
     byId("groups-list").replaceChildren();
     byId("transcript-list").replaceChildren();
@@ -104,7 +137,10 @@
     byId("notice").textContent = "";
     byId("workspace").hidden = true;
     byId("auth-panel").hidden = false;
-    document.querySelector(".admin-only").hidden = true;
+    document.querySelectorAll(".admin-only").forEach((item) => { item.hidden = true; });
+    byId("add-recording-button").hidden = true;
+    byId("workspace-menu").hidden = true;
+    byId("workspace-menu").open = false;
     byId("session-state").textContent = message;
     activateView("jobs");
     authMode("login");
@@ -164,7 +200,7 @@
   }
 
   function activateView(name) {
-    if (name === "admin" && state.user?.role !== "admin") name = "jobs";
+    if (["admin", "profiles"].includes(name) && state.user?.role !== "admin") name = "jobs";
     document.querySelectorAll(".view").forEach((item) => {
       item.classList.toggle("active", item.id === name + "-view");
     });
@@ -174,6 +210,7 @@
       if (active) item.setAttribute("aria-current", "page");
       else item.removeAttribute("aria-current");
     });
+    byId("workspace-menu").open = false;
   }
 
   function csrfCookie() {
@@ -189,7 +226,17 @@
     byId("auth-panel").hidden = true;
     byId("workspace").hidden = false;
     byId("session-state").textContent = user.login + " · " + (user.role === "admin" ? "Администратор" : "Пользователь");
-    document.querySelector(".admin-only").hidden = user.role !== "admin";
+    document.querySelectorAll(".admin-only").forEach((item) => { item.hidden = user.role !== "admin"; });
+    byId("add-recording-button").hidden = false;
+    byId("workspace-menu").hidden = false;
+  }
+
+  function formatJobDate(value) {
+    const date = new Date(value || "");
+    if (Number.isNaN(date.getTime())) return value || "Дата неизвестна";
+    return new Intl.DateTimeFormat("ru-RU", {
+      day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
+    }).format(date);
   }
 
   function formatTime(milliseconds) {
@@ -207,33 +254,24 @@
     if (!editor?.revision) return { segmentTexts: {}, groupUpdates: {} };
     const segmentTexts = {};
     editor.revision.segments.forEach((segment) => {
-      const input = Array.from(document.querySelectorAll(".transcript-edit"))
-        .find((item) => item.dataset.segmentId === segment.source_segment_id);
-      if (input && input.value !== segment.text) segmentTexts[segment.source_segment_id] = input.value;
+      const draft = editor.segmentDrafts.get(segment.source_segment_id);
+      if (draft !== undefined && draft !== segment.text) segmentTexts[segment.source_segment_id] = draft;
     });
-    const groupUpdates = {};
-    editor.revision.groups.forEach((group) => {
-      const row = Array.from(document.querySelectorAll(".group-editor"))
-        .find((item) => item.dataset.groupId === group.speaker_group_id);
-      if (!row) return;
-      const label = row.querySelector(".group-label-input").value.trim();
-      const profileId = row.querySelector(".group-profile-select").value || null;
-      const decision = editor.decisions.get(group.speaker_group_id);
-      if (label && (label !== group.label || profileId !== group.profile_id || decision)) {
-        groupUpdates[group.speaker_group_id] = {
-          label_snapshot: label, profile_id: decision === "rejected" ? null : profileId,
-          assignment_status: decision || (profileId !== group.profile_id
-            ? (profileId ? "confirmed" : "unknown") : group.assignment_status),
-          provenance: "manual",
-        };
-      }
+    return { segmentTexts, groupUpdates: {} };
+  }
+
+  function hasIdentityDrafts(editor = state.editor) {
+    if (!editor?.revision) return false;
+    return editor.revision.groups.some((group) => {
+      const draft = editor.identityDrafts.get(group.speaker_group_id);
+      return draft !== undefined && draft.trim() !== group.label;
     });
-    return { segmentTexts, groupUpdates };
   }
 
   function hasEditorChanges(editor = state.editor) {
     const changes = editorChanges(editor);
-    return Boolean(Object.keys(changes.segmentTexts).length || Object.keys(changes.groupUpdates).length);
+    return Boolean(Object.keys(changes.segmentTexts).length || Object.keys(changes.groupUpdates).length ||
+      hasIdentityDrafts(editor));
   }
 
   function setEditorBusy(editor, busy) {
@@ -268,8 +306,22 @@
     items.forEach((job) => {
       const row = document.createElement("article");
       row.className = "job";
+      const icon = text("span", "♫");
+      icon.className = "job-file-icon";
+      icon.setAttribute("aria-hidden", "true");
       const detail = document.createElement("div");
-      const status = text("small", (statusLabels[job.status] || "Неизвестный статус") + " · " + (job.updated_at || ""));
+      detail.className = "job-detail";
+      const openFromCard = () => openJob(job).catch(showError);
+      detail.tabIndex = 0;
+      detail.setAttribute("role", "button");
+      detail.setAttribute("aria-label", "Открыть запись «" + job.source_name + "» в редакторе");
+      detail.addEventListener("click", openFromCard);
+      detail.addEventListener("keydown", (event) => {
+        if (!["Enter", " "].includes(event.key)) return;
+        event.preventDefault();
+        openFromCard();
+      });
+      const status = text("small", (statusLabels[job.status] || "Неизвестный статус") + " · " + formatJobDate(job.updated_at || job.created_at));
       status.className = "status-" + job.status;
       detail.append(text("strong", job.source_name), status);
       const run = job.current_run || job.runs?.find((item) => item.id === job.current_run_id);
@@ -287,15 +339,32 @@
         start.addEventListener("click", () => startRun(job, start));
         actions.append(start);
       }
+      const menu = document.createElement("details");
+      menu.className = "job-overflow";
+      const menuToggle = document.createElement("summary");
+      menuToggle.setAttribute("aria-label", "Действия с записью «" + job.source_name + "»");
+      menuToggle.title = "Дополнительные действия";
+      menuToggle.textContent = "⋮";
+      const menuPanel = document.createElement("div");
+      menuPanel.className = "job-overflow-panel";
+      const open = text("button", "Открыть в редакторе");
+      open.type = "button";
+      open.className = "menu-item";
+      open.addEventListener("click", () => {
+        menu.open = false;
+        openFromCard();
+      });
+      menuPanel.append(open);
       if (["queued", "processing"].includes(job.status)) {
         const cancel = text("button", run?.cancel_requested ? "Отмена запрошена" : "Отменить");
         cancel.type = "button";
-        cancel.className = "secondary";
+        cancel.className = "menu-item menu-item-danger";
         cancel.disabled = Boolean(run?.cancel_requested);
         cancel.addEventListener("click", async () => {
           cancel.disabled = true;
           try {
             await request("/jobs/" + encodeURIComponent(job.id) + "/cancel", { method: "POST" });
+            menu.open = false;
             notify("Отмена обработки запрошена.");
             await loadJobs();
           } catch (error) {
@@ -303,14 +372,11 @@
             cancel.disabled = false;
           }
         });
-        actions.append(cancel);
+        menuPanel.append(cancel);
       }
-      const button = text("button", "Открыть");
-      button.type = "button";
-      button.className = "secondary";
-      button.addEventListener("click", () => openJob(job));
-      actions.append(button);
-      row.append(detail, actions);
+      menu.append(menuToggle, menuPanel);
+      actions.append(menu);
+      row.append(icon, detail, actions);
       list.append(row);
     });
   }
@@ -523,6 +589,13 @@
     });
   }
 
+  function editSegment(editor, segmentId) {
+    if (editor.saving) return;
+    editor.editingSegmentId = segmentId;
+    renderTranscript();
+    requestAnimationFrame(() => document.querySelector(".transcript-edit")?.focus());
+  }
+
   function renderTranscript() {
     const list = byId("transcript-list");
     list.replaceChildren();
@@ -535,6 +608,7 @@
       const timing = editor.timingBySegment.get(segment.source_segment_id);
       const row = document.createElement("article");
       row.className = "transcript-row";
+      row.dataset.segmentId = segment.source_segment_id;
       const seekButton = text("button", timing ? formatTime(timing.start_ms) : "—");
       seekButton.type = "button";
       seekButton.className = "timestamp";
@@ -545,61 +619,94 @@
       body.className = "transcript-body";
       const groupIds = segment.speaker_group_ids?.length ? segment.speaker_group_ids :
         segment.primary_group_id ? [segment.primary_group_id] : [];
-      body.append(text("small", groupIds.length
-        ? "Говорящие: " + groupIds.map((id) => editor.groupById.get(id)?.label || id).join(" · ")
-        : "Неизвестный говорящий"));
+      const speaker = text("small", groupIds.length
+        ? groupIds.map((id) => editor.groupById.get(id)?.label || id).join(" · ")
+        : "Неизвестный говорящий");
+      speaker.className = "turn-speaker";
+      body.append(speaker);
       if (segment.requires_review || groupIds.length > 1) {
         const badge = text("span", "Одновременная речь — проверить");
         badge.className = "review-badge";
         body.append(badge);
         row.classList.add("requires-review");
       }
-      const input = document.createElement("textarea");
-      input.className = "transcript-edit";
-      input.dataset.segmentId = segment.source_segment_id;
-      input.rows = Math.max(2, Math.ceil(segment.text.length / 72));
-      input.value = segment.text;
-      input.setAttribute("aria-label", "Текст реплики");
-      body.append(input);
-      const suggestions = editor.suggestions?.filter((item) => item.source_segment_id === segment.source_segment_id) || [];
-      suggestions.forEach((suggestion) => {
-        const button = text("button", "Подставить «" + suggestion.canonical + "» вместо «" + suggestion.matched_variant + "»");
-        button.type = "button";
-        button.className = "secondary suggestion-button";
-        button.addEventListener("click", () => {
-          if (editor.saving) return;
-          const start = suggestion.start_offset;
-          const end = suggestion.end_offset;
-          if (Number.isInteger(start) && Number.isInteger(end) &&
-              input.value.slice(start, end).localeCompare(
-                suggestion.matched_variant, undefined, { sensitivity: "accent" },
-              ) === 0) {
-            input.value = input.value.slice(0, start) + suggestion.canonical + input.value.slice(end);
-          } else if (!Number.isInteger(start) && input.value.includes(suggestion.matched_variant)) {
-            input.value = input.value.replace(suggestion.matched_variant, suggestion.canonical);
-          } else {
-            notify("Текст реплики уже изменён. Проверьте подсказку вручную.", true);
-            return;
-          }
-          button.disabled = true;
-          notify("Подсказка внесена в черновик. Сохраните правки.");
+      const draft = editor.segmentDrafts.get(segment.source_segment_id) ?? segment.text;
+      if (editor.editingSegmentId === segment.source_segment_id) {
+        row.classList.add("is-editing");
+        const input = document.createElement("textarea");
+        input.className = "transcript-edit";
+        input.dataset.segmentId = segment.source_segment_id;
+        input.rows = Math.max(2, Math.ceil(draft.length / 84));
+        input.value = draft;
+        input.setAttribute("aria-label", "Текст реплики");
+        input.addEventListener("input", () => { editor.segmentDrafts.set(segment.source_segment_id, input.value); });
+        body.append(input);
+      } else {
+        const content = text("p", draft);
+        content.className = "transcript-text";
+        content.tabIndex = 0;
+        content.setAttribute("role", "button");
+        content.setAttribute("aria-label", "Изменить реплику");
+        content.addEventListener("click", () => editSegment(editor, segment.source_segment_id));
+        content.addEventListener("keydown", (event) => {
+          if (!["Enter", " "].includes(event.key)) return;
+          event.preventDefault();
+          editSegment(editor, segment.source_segment_id);
         });
-        body.append(button);
+        body.append(content);
+      }
+      const actions = document.createElement("div");
+      actions.className = "turn-actions";
+      const edit = text("button", editor.editingSegmentId === segment.source_segment_id ? "Готово" : "Править");
+      edit.type = "button";
+      edit.className = "secondary";
+      edit.addEventListener("click", () => {
+        if (editor.editingSegmentId === segment.source_segment_id) {
+          editor.editingSegmentId = null;
+          renderTranscript();
+        } else {
+          editSegment(editor, segment.source_segment_id);
+        }
       });
+      actions.append(edit);
+      const suggestions = editor.suggestions?.filter((item) => item.source_segment_id === segment.source_segment_id) || [];
+      if (suggestions.length) {
+        const suggestionMenu = document.createElement("details");
+        suggestionMenu.className = "turn-suggestions";
+        const summary = text("summary", "Термины: " + suggestions.length);
+        const suggestionList = document.createElement("div");
+        suggestionList.className = "turn-suggestions-list";
+        suggestions.forEach((suggestion) => {
+          const button = text("button", "Заменить «" + suggestion.matched_variant + "» на «" + suggestion.canonical + "»");
+          button.type = "button";
+          button.className = "menu-item";
+          button.addEventListener("click", () => {
+            if (editor.saving) return;
+            const current = editor.segmentDrafts.get(segment.source_segment_id) ?? segment.text;
+            const start = suggestion.start_offset;
+            const end = suggestion.end_offset;
+            if (Number.isInteger(start) && Number.isInteger(end) &&
+                current.slice(start, end).localeCompare(
+                  suggestion.matched_variant, undefined, { sensitivity: "accent" },
+                ) === 0) {
+              editor.segmentDrafts.set(segment.source_segment_id, current.slice(0, start) + suggestion.canonical + current.slice(end));
+            } else if (!Number.isInteger(start) && current.includes(suggestion.matched_variant)) {
+              editor.segmentDrafts.set(segment.source_segment_id, current.replace(suggestion.matched_variant, suggestion.canonical));
+            } else {
+              notify("Текст реплики уже изменён. Проверьте подсказку вручную.", true);
+              return;
+            }
+            editSegment(editor, segment.source_segment_id);
+            notify("Подсказка внесена в черновик. Сохраните правки.");
+          });
+          suggestionList.append(button);
+        });
+        suggestionMenu.append(summary, suggestionList);
+        actions.append(suggestionMenu);
+      }
+      body.append(actions);
       row.append(seekButton, body);
       list.append(row);
-    });
-  }
-
-  function profileOptions(select, selectedProfileId) {
-    const empty = text("option", "Без общего профиля");
-    empty.value = "";
-    select.append(empty);
-    state.editor.profiles.forEach((profile) => {
-      const option = text("option", profile.display_name);
-      option.value = profile.id;
-      option.selected = profile.id === selectedProfileId;
-      select.append(option);
     });
   }
 
@@ -623,108 +730,156 @@
       const row = document.createElement("article");
       row.className = "group-editor";
       row.dataset.groupId = group.speaker_group_id;
-      row.append(
-        text(
-          "small",
-          group.merged_into_group_id
-            ? "Объединена с " + group.merged_into_group_id
-            : "Локальная группа · " + (assignmentLabels[group.assignment_status] || "не определён"),
-        ),
-      );
       const context = editor.revision.segments.filter((segment) =>
         segment.speaker_group_ids?.includes(group.speaker_group_id));
       const overlaps = context.filter((segment) => segment.requires_review || segment.speaker_group_ids?.length > 1).length;
-      row.append(text("small", "Реплик: " + context.length + " · На проверку: " + overlaps +
-        " · Источник: " + (group.provenance || "не указан")));
-      if (context.length) row.append(text("small", "Первый фрагмент: " + context[0].text));
-      (group.candidates || []).slice(0, 3).forEach((candidate) => {
-        const profileName = editor.profiles.find((item) => item.id === candidate.profile_id)?.display_name || "Профиль недоступен";
-        const distance = Number.isFinite(candidate.distance) ? " · расстояние " + candidate.distance : "";
-        row.append(text("small", "Кандидат: " + profileName + distance +
-          (candidate.reason ? " · " + candidate.reason : "")));
-      });
       const name = document.createElement("input");
       name.className = "group-label-input";
-      name.value = group.label;
+      name.value = editor.identityDrafts.get(group.speaker_group_id) ?? group.label;
       name.maxLength = 240;
-      name.setAttribute("aria-label", "Метка группы");
-      const profile = document.createElement("select");
-      profile.className = "group-profile-select";
-      profileOptions(profile, group.profile_id);
-      const enroll = text("button", "Добавить образец голоса");
-      enroll.type = "button";
-      enroll.className = "secondary enroll-sample";
-      enroll.dataset.eligible = String(!group.merged_into_group_id && group.assignment_status === "confirmed" && Boolean(group.profile_id));
-      const consent = document.createElement("input");
-      consent.type = "checkbox";
-      consent.checked = false;
-      const consentLabel = document.createElement("label");
-      consentLabel.className = "sample-consent";
-      consentLabel.append(consent, text("span", "После проверки качества добавить мой фрагмент в общий профиль"));
-      consent.disabled = enroll.dataset.eligible !== "true";
-      enroll.disabled = true;
-      consent.addEventListener("change", () => { enroll.disabled = !consent.checked || enroll.dataset.eligible !== "true"; });
-      enroll.addEventListener("click", async () => {
-        if (enroll.disabled || state.editor !== editor) return;
-        const profileId = profile.value;
-        if (!profileId) {
-          notify("Сначала выберите общий голосовой профиль для этой группы.", true);
-          return;
-        }
-        enroll.disabled = true;
-        try {
-          const result = await request(
-            "/jobs/" + encodeURIComponent(editor.jobId) + "/transcript/groups/" +
-              encodeURIComponent(group.speaker_group_id) + "/samples",
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ profile_id: profileId }),
-            },
-          );
-          await loadProfiles();
-          if (state.editor !== editor) return;
-          notify(
-            result.indexing_state === "active"
-              ? "Образец добавлен в общий голосовой индекс."
-              : "Образец сохранён; общий голосовой индекс повторит обработку автоматически.",
-          );
-          consent.checked = false;
-        } catch (error) {
-          showError(error);
-        } finally {
-          if (state.editor === editor) enroll.disabled = !consent.checked || enroll.dataset.eligible !== "true";
-        }
+      name.placeholder = "Имя и фамилия";
+      name.setAttribute("aria-label", "Имя и фамилия говорящего");
+      name.addEventListener("input", () => {
+        editor.identityDrafts.set(group.speaker_group_id, name.value);
+        identity.disabled = !name.value.trim() || editor.saving;
       });
-      row.append(name, profile);
-      profile.addEventListener("change", () => { editor.decisions.delete(group.speaker_group_id); });
-      if (["candidate", "ambiguous", "auto_assigned"].includes(group.assignment_status)) {
-        const decisions = document.createElement("div");
-        decisions.className = "group-decisions";
-        const pending = text("small", "Решение не подтверждено вручную.");
-        const confirm = text("button", "Подтвердить");
-        confirm.type = "button";
-        confirm.addEventListener("click", () => {
-          if (!profile.value) {
-            notify("Выберите профиль перед подтверждением.", true);
-            return;
-          }
-          editor.decisions.set(group.speaker_group_id, "confirmed");
-          pending.textContent = "Подтверждение ожидает сохранения.";
-        });
-        const reject = text("button", "Отклонить");
-        reject.type = "button";
-        reject.className = "secondary";
-        reject.addEventListener("click", () => {
-          editor.decisions.set(group.speaker_group_id, "rejected");
-          pending.textContent = "Отклонение ожидает сохранения.";
-        });
-        decisions.append(confirm, reject, pending);
-        row.append(decisions);
+      const heading = document.createElement("div");
+      heading.className = "group-heading";
+      const summary = document.createElement("div");
+      summary.append(
+        text("small", group.merged_into_group_id
+          ? "Объединена с " + group.merged_into_group_id
+          : assignmentLabels[group.assignment_status] || "не определён"),
+        text("small", context.length + " реплик" + (overlaps ? " · " + overlaps + " на проверку" : "")),
+      );
+      heading.append(name, summary);
+      const controls = document.createElement("div");
+      controls.className = "group-controls";
+      const firstTiming = context.length ? editor.timingBySegment.get(context[0].source_segment_id) : null;
+      if (firstTiming) {
+        const play = text("button", "Слушать");
+        play.type = "button";
+        play.className = "secondary";
+        play.addEventListener("click", () => seek(firstTiming.start_ms));
+        controls.append(play);
       }
-      row.append(consentLabel, enroll);
+      const identity = text("button", "Сохранить имя");
+      identity.type = "button";
+      identity.className = "secondary";
+      identity.disabled = !name.value.trim() || editor.saving;
+      identity.addEventListener("click", () => saveGroupIdentity(editor, group, name, identity));
+      controls.append(identity);
+      row.append(heading, controls);
+      if (context.length) {
+        const excerpt = text("p", context[0].text);
+        excerpt.className = "group-excerpt";
+        row.append(excerpt);
+      }
+      if (group.assignment_status === "confirmed" && group.label.trim()) {
+        const sample = document.createElement("details");
+        sample.className = "sample-control";
+        sample.append(text("summary", "Добавить образец голоса"));
+        const sampleBody = document.createElement("div");
+        const consent = document.createElement("input");
+        consent.type = "checkbox";
+        const consentLabel = document.createElement("label");
+        consentLabel.className = "sample-consent";
+        consentLabel.append(consent, text("span", "После проверки качества добавить образец для этого говорящего"));
+        const enroll = text("button", "Добавить образец");
+        enroll.type = "button";
+        enroll.className = "secondary enroll-sample";
+        enroll.disabled = true;
+        consent.addEventListener("change", () => { enroll.disabled = !consent.checked || editor.saving; });
+        enroll.addEventListener("click", () => enrollSpeakerSample(editor, group, consent, enroll));
+        sampleBody.append(consentLabel, enroll);
+        sample.append(sampleBody);
+        row.append(sample);
+      }
       list.append(row);
     });
+  }
+
+  function applyEditorRevision(editor, revision) {
+    editor.revision = revision;
+    editor.groupById = new Map(revision.groups.map((group) => [group.speaker_group_id, group]));
+    editor.decisions.clear();
+  }
+
+  function hasChangesOutsideGroup(editor, groupId) {
+    const changes = editorChanges(editor);
+    if (Object.keys(changes.segmentTexts).length) return true;
+    return editor.revision.groups.some((group) => {
+      if (group.speaker_group_id === groupId) return false;
+      const draft = editor.identityDrafts.get(group.speaker_group_id);
+      return draft !== undefined && draft.trim() !== group.label;
+    });
+  }
+
+  async function saveGroupIdentity(editor, group, input, button) {
+    if (state.editor !== editor || editor.saving) return;
+    const displayName = input.value.trim();
+    if (!displayName) {
+      notify("Укажите имя и фамилию говорящего.", true);
+      input.focus();
+      return;
+    }
+    if (hasChangesOutsideGroup(editor, group.speaker_group_id)) {
+      notify("Сначала сохраните или отмените другие правки транскрипции.", true);
+      return;
+    }
+    if (displayName === group.label) {
+      editor.identityDrafts.delete(group.speaker_group_id);
+      renderGroups();
+      return;
+    }
+    button.disabled = true;
+    try {
+      const revision = await request(
+        "/jobs/" + encodeURIComponent(editor.jobId) + "/transcript/groups/" +
+          encodeURIComponent(group.speaker_group_id) + "/identity",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            display_name: displayName,
+            expected_revision_number: editor.revision.revision.number,
+          }),
+        },
+      );
+      if (state.editor !== editor) return;
+      applyEditorRevision(editor, revision);
+      editor.identityDrafts.delete(group.speaker_group_id);
+      renderGroups();
+      renderTranscript();
+      byId("editor-help").textContent = "Ревизия " + revision.revision.number + ". Имя применено ко всем репликам группы.";
+      notify("Имя говорящего сохранено для всей группы.");
+    } catch (error) {
+      showError(error);
+      button.disabled = false;
+    }
+  }
+
+  async function enrollSpeakerSample(editor, group, consent, button) {
+    if (state.editor !== editor || editor.saving || !consent.checked) return;
+    button.disabled = true;
+    try {
+      const result = await request(
+        "/jobs/" + encodeURIComponent(editor.jobId) + "/transcript/groups/" +
+          encodeURIComponent(group.speaker_group_id) + "/samples",
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+      );
+      if (state.editor !== editor) return;
+      consent.checked = false;
+      notify(
+        result.indexing_state === "active"
+          ? "Образец голоса добавлен для автоматического сопоставления."
+          : "Образец голоса сохранён и будет добавлен после проверки качества.",
+      );
+    } catch (error) {
+      showError(error);
+    } finally {
+      if (state.editor === editor) button.disabled = !consent.checked || editor.saving;
+    }
   }
 
   function currentSubtitle(timeMs) {
@@ -740,7 +895,7 @@
     const subtitle = currentSubtitle(timeMs);
     byId("subtitle-line").textContent = subtitle ? subtitle.text : "Субтитры появятся после обработки.";
     document.querySelectorAll(".transcript-row").forEach((row) => {
-      const id = row.querySelector("textarea")?.dataset.segmentId;
+      const id = row.dataset.segmentId;
       const timing = state.editor?.timingBySegment.get(id);
       row.classList.toggle("active", Boolean(timing && timeMs >= timing.start_ms && timeMs <= timing.end_ms));
     });
@@ -752,9 +907,7 @@
     const generation = state.generation;
     try {
       const path = "/jobs/" + encodeURIComponent(editor.jobId);
-      const [source, profiles] = await Promise.all([
-        request(path + "/source"), request("/voice-profiles"),
-      ]);
+      const source = await request(path + "/source");
       if (generation !== state.generation || state.editor !== editor) return;
       let transcript = null;
       let unavailable = "";
@@ -765,10 +918,10 @@
         unavailable = error.message;
       }
       if (generation !== state.generation || state.editor !== editor || hasEditorChanges(editor)) return;
-      editor.profiles = profiles.items || [];
       editor.revision = transcript;
       editor.timingBySegment = new Map((source.segments || []).map((segment) => [segment.id, segment]));
       editor.groupById = new Map((transcript?.groups || []).map((group) => [group.speaker_group_id, group]));
+      editor.identityDrafts.clear();
       editor.unavailable = unavailable;
       editor.decisions.clear();
       editor.suggestions = [];
@@ -784,6 +937,7 @@
       renderGroups();
       renderTranscript();
       byId("save-editor-button").disabled = !transcript;
+      byId("download-text-button").hidden = !transcript;
       byId("editor-help").textContent = transcript
         ? "Ревизия " + transcript.revision.number + ". Правки сохраняются новой ревизией; отмеченные наложения требуют проверки."
         : unavailable || "Дождитесь публикации результата обработки.";
@@ -814,8 +968,9 @@
     if (hasEditorChanges() && !window.confirm("Есть несохранённые правки. Открыть другую запись и потерять их?")) return;
     clearEditor();
     const editor = {
-      jobId: job.id, job, profiles: [], revision: null, timingBySegment: new Map(),
-      groupById: new Map(), decisions: new Map(), suggestions: [], unavailable: "", loading: false, saving: false,
+      jobId: job.id, job, revision: null, timingBySegment: new Map(),
+      groupById: new Map(), decisions: new Map(), suggestions: [], segmentDrafts: new Map(), identityDrafts: new Map(), editingSegmentId: null,
+      unavailable: "", loading: false, saving: false,
     };
     state.editor = editor;
     byId("editor-title").textContent = job.source_name;
@@ -830,7 +985,9 @@
     if (!editor?.revision || editor.saving || byId("save-editor-button").disabled) return;
     const { segmentTexts, groupUpdates } = editorChanges(editor);
     if (!Object.keys(segmentTexts).length && !Object.keys(groupUpdates).length) {
-      notify("Нет изменений для сохранения.");
+      notify(hasIdentityDrafts(editor)
+        ? "Сохраните имя говорящего в соответствующей строке."
+        : "Нет изменений для сохранения.");
       return;
     }
     setEditorBusy(editor, true);
@@ -845,10 +1002,10 @@
         }),
       });
       if (state.editor !== editor) return;
-      editor.revision = result;
-      editor.groupById = new Map(result.groups.map((group) => [group.speaker_group_id, group]));
-      editor.decisions.clear();
+      applyEditorRevision(editor, result);
       editor.suggestions = [];
+      editor.segmentDrafts.clear();
+      editor.editingSegmentId = null;
       byId("editor-conflict").hidden = true;
       renderGroups();
       renderTranscript();
@@ -861,6 +1018,39 @@
       if (state.editor === editor) showError(error);
     } finally {
       if (state.editor === editor) setEditorBusy(editor, false);
+    }
+  }
+
+  async function downloadTranscriptText() {
+    const editor = state.editor;
+    const button = byId("download-text-button");
+    if (!editor?.revision || button.disabled) return;
+    const generation = state.generation;
+    button.disabled = true;
+    try {
+      const response = await fetch(
+        api + "/jobs/" + encodeURIComponent(editor.jobId) + "/transcript/export?format=txt",
+        { credentials: "same-origin" },
+      );
+      requireGeneration(generation);
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.message || "Не удалось подготовить текстовый файл.");
+      }
+      const blob = await response.blob();
+      requireGeneration(generation);
+      const link = document.createElement("a");
+      const url = URL.createObjectURL(blob);
+      link.href = url;
+      link.download = String(editor.job.source_name || "transcription").replace(/\.[^.]+$/, "") + ".txt";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      showError(error);
+    } finally {
+      if (generation === state.generation) button.disabled = false;
     }
   }
 
@@ -942,8 +1132,7 @@
       } finally {
         state.pendingRuns.delete(uploadedJob.id);
       }
-      form.reset();
-      updateSelectedMedia();
+      resetUploadDraft();
       let refreshError = null;
       try {
         await loadJobs();
@@ -968,7 +1157,7 @@
         state.uploadBusy = false;
         byId("media-input").disabled = false;
         button.textContent = "Загрузить и транскрибировать";
-        if (uploadedJob) form.reset();
+        if (uploadedJob) resetUploadDraft();
         updateSelectedMedia();
       }
     }
@@ -1025,21 +1214,19 @@
   });
 
   byId("save-editor-button").addEventListener("click", saveEditor);
+  byId("download-text-button").addEventListener("click", downloadTranscriptText);
   byId("copy-editor-draft").addEventListener("click", async () => {
     const editor = state.editor;
     if (!editor?.revision) return;
     const lines = editor.revision.segments.map((segment) => {
-      const input = Array.from(document.querySelectorAll(".transcript-edit"))
-        .find((item) => item.dataset.segmentId === segment.source_segment_id);
-      return (input?.value ?? segment.text);
+      return editor.segmentDrafts.get(segment.source_segment_id) ?? segment.text;
     });
     const groups = Array.from(document.querySelectorAll(".group-editor")).map((row) => {
       const label = row.querySelector(".group-label-input")?.value || "";
-      const profile = row.querySelector(".group-profile-select");
-      return label + " — " + (profile?.selectedOptions[0]?.textContent || "Без общего профиля");
+      return label;
     });
     try {
-      await navigator.clipboard.writeText("Группы:\n" + groups.join("\n") + "\n\nТекст:\n" + lines.join("\n\n"));
+      await navigator.clipboard.writeText("Говорящие:\n" + groups.join("\n") + "\n\nТекст:\n" + lines.join("\n\n"));
       notify("Ваши правки скопированы. Теперь можно обновить запись.");
     } catch (_) {
       notify("Не удалось скопировать автоматически. Выделите и скопируйте правки в полях редактора.", true);
@@ -1111,7 +1298,44 @@
     });
   });
   byId("media-input").addEventListener("change", updateSelectedMedia);
+  const goToJobs = () => {
+    if (!state.user) return;
+    activateView("jobs");
+    loadJobs().catch(showError);
+  };
+  byId("go-to-jobs").addEventListener("click", goToJobs);
+  byId("go-to-jobs").addEventListener("keydown", (event) => {
+    if (!['Enter', ' '].includes(event.key)) return;
+    event.preventDefault();
+    goToJobs();
+  });
+  byId("add-recording-button").addEventListener("click", openMediaPicker);
+  byId("replace-media-button").addEventListener("click", openMediaPicker);
+  byId("discard-media-button").addEventListener("click", resetUploadDraft);
+  byId("recording-dropzone").addEventListener("click", openMediaPicker);
+  byId("recording-dropzone").addEventListener("keydown", (event) => {
+    if (!["Enter", " "].includes(event.key)) return;
+    event.preventDefault();
+    openMediaPicker();
+  });
+  byId("recording-dropzone").addEventListener("dragover", (event) => {
+    event.preventDefault();
+    if (!state.uploadBusy) event.currentTarget.classList.add("is-dragging");
+  });
+  byId("recording-dropzone").addEventListener("dragleave", (event) => {
+    if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.classList.remove("is-dragging");
+  });
+  byId("recording-dropzone").addEventListener("drop", (event) => {
+    event.preventDefault();
+    event.currentTarget.classList.remove("is-dragging");
+    if (state.uploadBusy) return;
+    selectMediaFile(event.dataTransfer?.files?.[0]);
+  });
   byId("refresh-jobs-button").addEventListener("click", () => loadJobs().catch(showError));
+  byId("back-to-jobs-button").addEventListener("click", () => {
+    activateView("jobs");
+    loadJobs().catch(showError);
+  });
 
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -1135,6 +1359,21 @@
       ? player.currentTime / player.duration * 100 : 0;
     document.querySelector(".waveform span").style.width = Math.min(100, Math.max(0, percentage)) + "%";
     renderSubtitle(timeMs);
+  });
+  byId("audio-player").addEventListener("loadedmetadata", () => {
+    byId("audio-help").hidden = true;
+    byId("audio-help").textContent = "";
+  });
+  byId("audio-player").addEventListener("error", () => {
+    if (!state.editor) return;
+    const player = byId("audio-player");
+    const code = player.error?.code;
+    const detail = code === 4
+      ? "Формат аудио не поддерживается браузером."
+      : "Браузер не смог загрузить аудиопоток.";
+    const help = byId("audio-help");
+    help.textContent = detail + " Обновите запись; если ошибка повторится, перезагрузите страницу и сообщите администратору название записи.";
+    help.hidden = false;
   });
 
   window.addEventListener("beforeunload", (event) => {

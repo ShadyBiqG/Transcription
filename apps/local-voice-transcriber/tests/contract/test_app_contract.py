@@ -195,8 +195,24 @@ def test_static_index_is_public_without_api_secrets(client: TestClient) -> None:
     assert "Transcription Next" in response.text
     assert "local_voice_transcriber_session" not in response.text
     assert response.headers["cache-control"] == "no-store, max-age=0"
+    assert 'id="add-recording-button"' in response.text
+    assert 'id="recording-dropzone"' in response.text
+    assert 'id="workspace-menu"' in response.text
+    assert 'id="go-to-jobs"' in response.text
+    assert 'class="menu-item" data-view="jobs">Записи</button>' in response.text
+    assert 'class="menu-item admin-only" data-view="profiles"' in response.text
+    assert 'id="download-text-button"' in response.text
 
     script = client.get("/static/app.js")
 
     assert script.status_code == 200
     assert script.headers["cache-control"] == "no-store, max-age=0"
+    assert "function selectMediaFile" in script.text
+    assert 'if (file && state.user) activateView("jobs");' in script.text
+    assert 'function openMediaPicker()' in script.text
+    assert 'byId("go-to-jobs").addEventListener("click", goToJobs);' in script.text
+    assert 'addEventListener("drop"' in script.text
+    assert 'audio-player").addEventListener("error"' in script.text
+    assert '"/identity"' in script.text
+    assert 'transcript/export?format=txt' in script.text
+    assert 'group.assignment_status === "confirmed"' in script.text

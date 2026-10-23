@@ -9,7 +9,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Body, Query, Request
 from pydantic import BaseModel, Field
 
-from ..auth import ApiError, CsrfSessionDependency, SessionDependency
+from ..auth import AdminDependency, ApiError, CsrfSessionDependency
 from ..voice.repository import (
     SharedVoiceProfile,
     VoiceDirectoryError,
@@ -99,10 +99,10 @@ def _require_admin(session: CsrfSessionDependency) -> None:
 @router.get("")
 def list_profiles(
     request: Request,
-    session: SessionDependency,
+    session: AdminDependency,
     query: str = Query(default="", max_length=240),
 ) -> dict[str, object]:
-    """Показывает всем вошедшим только безопасные общие карточки."""
+    """Показывает общий технический каталог только администратору."""
 
     del session
     try:
@@ -118,8 +118,9 @@ def create_profile(
     payload: CreatePayload,
     session: CsrfSessionDependency,
 ) -> dict[str, object]:
-    """Создаёт общую карточку, но не добавляет голосовой образец неявно."""
+    """Создаёт общую карточку из административного технического каталога."""
 
+    _require_admin(session)
     profile_id = str(uuid4())
     try:
         profile = _service(request).create_profile(
@@ -146,8 +147,9 @@ def rename_profile(
     payload: RenamePayload,
     session: CsrfSessionDependency,
 ) -> dict[str, object]:
-    """Позволяет участнику исправить имя общего профиля с аудитом."""
+    """Исправляет имя общей карточки из административного каталога."""
 
+    _require_admin(session)
     try:
         profile = _service(request).rename_profile(
             profile_id=profile_id,
@@ -172,8 +174,9 @@ def add_profile_alias(
     payload: AliasPayload,
     session: CsrfSessionDependency,
 ) -> dict[str, object]:
-    """Добавляет вариант имени без раскрытия личных источников образца."""
+    """Добавляет вариант имени из административного каталога."""
 
+    _require_admin(session)
     try:
         profile = _service(request).add_alias(
             profile_id=profile_id,

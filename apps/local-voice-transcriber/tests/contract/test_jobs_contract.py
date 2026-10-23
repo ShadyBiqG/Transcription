@@ -4,6 +4,8 @@ import pytest
 from conftest import login, register
 from fastapi.testclient import TestClient
 
+from local_voice_transcriber.editor import GroupSnapshot, SourceSegmentSnapshot
+
 
 def _headers(client: TestClient) -> dict[str, str]:
     return {"X-CSRF-Token": client.cookies.get("local_voice_transcriber_csrf") or ""}
@@ -108,6 +110,21 @@ def _create_job(client: TestClient) -> str:
     return response.json()["job"]["id"]
 
 
+def _mark_ready(client: TestClient, job_id: str, *, run_id: str = "ready-run") -> str:
+    repository = client.app.state.jobs_repository
+    run = repository.create_run(
+        run_id=run_id,
+        job_id=job_id,
+        request_id=f"request-{run_id}",
+        asr_pack_id="test-pack",
+    )
+    claimed = repository.claim_next_run(worker_id="test-worker", lease_seconds=30)
+    assert claimed is not None
+    assert claimed[1].id == run.id
+    repository.mark_ready(run_id=run.id, worker_id="test-worker")
+    return run.id
+
+
 def test_upload_and_list_are_private(client: TestClient) -> None:
     register(client, "owner")
     login(client, "owner")
@@ -126,6 +143,50 @@ def test_upload_and_list_are_private(client: TestClient) -> None:
         assert other.get(f"/api/v1/jobs/{job_id}").status_code == 404
         assert other.get(f"/api/v1/jobs/{job_id}/audio").status_code == 404
         assert other.get(f"/api/v1/jobs/{job_id}/source").status_code == 404
+
+
+def test_speaker_groups_do_not_disclose_internal_voice_identity(
+    logged_in_client: TestClient,
+) -> None:
+    client = logged_in_client
+    owner_id = client.get("/api/v1/auth/me").json()["user"]["id"]
+    job_id = _create_job(client)
+    client.app.state.editor_repository.create_baseline(
+        owner_id=owner_id,
+        job_id=job_id,
+        job_run_id="speaker-groups-run",
+        groups=(
+            GroupSnapshot(
+                speaker_group_id="group-1",
+                label_snapshot="Иван Иванов",
+                profile_id="internal-voice-identity",
+                assignment_status="confirmed",
+            ),
+        ),
+        source_segments=(
+            SourceSegmentSnapshot(
+                source_segment_id="segment-1",
+                ordinal=0,
+                text="Текст реплики",
+                primary_group_id="group-1",
+                speaker_group_ids=("group-1",),
+            ),
+        ),
+    )
+
+    response = client.get(f"/api/v1/jobs/{job_id}/speaker-groups")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["items"] == [
+        {
+            "id": "group-1",
+            "label": "Иван Иванов",
+            "assignment_status": "confirmed",
+            "requires_review": False,
+        }
+    ]
+    assert "profile_id" not in response.text
+    assert "internal-voice-identity" not in response.text
 
 
 def test_upload_requires_csrf_and_valid_media(client: TestClient) -> None:
@@ -179,6 +240,79 @@ def test_upload_accepts_supported_media_only_with_matching_signature(
     audio = client.get(f"/api/v1/jobs/{job['id']}/audio")
     assert audio.status_code == 200
     assert audio.headers["content-type"].startswith(content_type)
+    assert audio.headers["content-disposition"].startswith("inline;")
+
+
+def test_audio_serves_ready_normalized_wav_inline_with_ranges(
+    logged_in_client: TestClient, settings
+) -> None:
+    client = logged_in_client
+    job_id = _create_job(client)
+    run_id = _mark_ready(client, job_id)
+    normalized = settings.data_dir / "jobs" / job_id / "runs" / run_id / "normalized.wav"
+    normalized.parent.mkdir(parents=True)
+    normalized.write_bytes(_wav())
+
+    response = client.get(f"/api/v1/jobs/{job_id}/audio")
+
+    assert response.status_code == 200
+    assert response.content == _wav()
+    assert response.headers["content-type"].startswith("audio/wav")
+    assert response.headers["content-disposition"].startswith("inline;")
+
+    partial = client.get(f"/api/v1/jobs/{job_id}/audio", headers={"Range": "bytes=0-3"})
+    assert partial.status_code == 206
+    assert partial.content == _wav()[:4]
+    assert partial.headers["content-range"] == f"bytes 0-3/{len(_wav())}"
+
+
+def test_audio_falls_back_to_private_source_when_ready_wav_is_unavailable(
+    logged_in_client: TestClient,
+) -> None:
+    client = logged_in_client
+    response = client.post(
+        "/api/v1/jobs",
+        headers=_headers(client),
+        files={"media": ("meeting.mp3", _mp3(), "audio/mpeg")},
+    )
+    assert response.status_code == 201, response.text
+    job_id = response.json()["job"]["id"]
+    _mark_ready(client, job_id)
+
+    audio = client.get(f"/api/v1/jobs/{job_id}/audio")
+
+    assert audio.status_code == 200
+    assert audio.content == _mp3()
+    assert audio.headers["content-type"].startswith("audio/mpeg")
+    assert audio.headers["content-disposition"].startswith("inline;")
+
+
+def test_audio_does_not_follow_malformed_run_or_source_path_outside_private_job_directory(
+    logged_in_client: TestClient, settings
+) -> None:
+    client = logged_in_client
+    job_id = _create_job(client)
+    repository = client.app.state.jobs_repository
+    outside = settings.data_dir / "outside"
+    outside.mkdir()
+    (outside / "normalized.wav").write_bytes(b"outside-normalized-wav")
+    _mark_ready(client, job_id, run_id="../../../outside")
+
+    audio = client.get(f"/api/v1/jobs/{job_id}/audio")
+
+    assert audio.status_code == 200
+    assert audio.content == _webm()
+    assert audio.headers["content-type"].startswith("video/webm")
+
+    owner_id = client.get("/api/v1/auth/me").json()["user"]["id"]
+    repository.create_job(
+        job_id="malformed-source",
+        owner_id=owner_id,
+        source_name="outside.wav",
+        source_path=str(outside / "normalized.wav"),
+    )
+    unavailable = client.get("/api/v1/jobs/malformed-source/audio")
+    assert unavailable.status_code == 404
 
 
 def test_upload_accepts_id3_tag_larger_than_signature_window_when_audio_follows(

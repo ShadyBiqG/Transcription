@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from local_voice_transcriber.voice.repository import ProfileState, VoiceDirectoryRepository
+from local_voice_transcriber.voice.repository import (
+    ProfileState,
+    SpeakerIdentityUnavailableError,
+    VoiceDirectoryRepository,
+)
 from local_voice_transcriber.voice.service import (
     ExplicitSampleConfirmationRequiredError,
     VoiceDirectoryService,
@@ -32,6 +36,27 @@ def test_directory_is_shared_but_projection_has_no_private_sample_provenance(
     assert "source_job_id" not in projection
     assert "vector_id" not in projection
     assert "protected_path" not in projection
+
+
+def test_exact_speaker_identity_reuses_only_full_normalized_active_name(tmp_path: Path) -> None:
+    service = prepared_service(tmp_path)
+
+    created = service.resolve_or_create_active_speaker(
+        display_name="  Марина   Иванова ", actor_id="user-a"
+    )
+    reused = service.resolve_or_create_active_speaker(
+        display_name="марина иванова", actor_id="user-b"
+    )
+    partial = service.resolve_or_create_active_speaker(display_name="Марина", actor_id="user-b")
+
+    assert created.display_name == "Марина Иванова"
+    assert reused.id == created.id
+    assert partial.id != created.id
+    service.archive_profile(profile_id=created.id, actor_id="admin", reason="проверка")
+    with pytest.raises(SpeakerIdentityUnavailableError):
+        service.resolve_or_create_active_speaker(
+            display_name="Марина Иванова", actor_id="user-c"
+        )
 
 
 def test_sample_requires_explicit_confirmation_and_cannot_be_implicit_auto_data(

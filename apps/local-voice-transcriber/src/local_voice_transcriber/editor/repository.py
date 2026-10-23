@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from ..voice.repository import SharedVoiceProfile, VoiceDirectoryRepository
 from .models import (
     GroupMergeOperation,
     GroupSnapshot,
@@ -301,6 +302,70 @@ class EditorRepository:
                 groups=groups,
                 segments=segments,
             )
+
+    def assign_speaker_group_identity(
+        self,
+        *,
+        owner_id: str,
+        job_id: str,
+        speaker_group_id: str,
+        display_name: str,
+        expected_current_revision: int,
+        created_by: str,
+        voice_directory_repository: VoiceDirectoryRepository,
+    ) -> tuple[SharedVoiceProfile, TranscriptRevision]:
+        """Атомарно связывает группу с общей карточкой и новой ревизией.
+
+        Проверка optimistic concurrency выполняется до поиска или создания
+        карточки. Поэтому устаревший запрос не оставляет общую карточку без
+        связанной ревизии, а любая ошибка записи снимка откатывает и карточку.
+        """
+
+        self._validate_actor(owner_id, created_by)
+        with self._transaction() as connection:
+            current = self._require_current(
+                connection,
+                owner_id=owner_id,
+                job_id=job_id,
+                expected_current_revision=expected_current_revision,
+            )
+            group = next(
+                (item for item in current.groups if item.speaker_group_id == speaker_group_id),
+                None,
+            )
+            if group is None:
+                raise KeyError("Группа говорящего не найдена")
+            if group.merged_into_group_id is not None:
+                raise InvalidGroupOperationError("Назначьте подпись итоговой группе")
+            speaker = voice_directory_repository.resolve_or_create_active_speaker_in_transaction(
+                connection,
+                profile_id=str(uuid4()),
+                display_name=display_name,
+                created_by=created_by,
+            )
+            revision = self._append_revision(
+                connection,
+                current=current,
+                origin=RevisionOrigin.MANUAL,
+                created_by=created_by,
+                comment="Назначена подпись говорящего",
+                groups=[
+                    _replace_group(
+                        item,
+                        GroupUpdate(
+                            label_snapshot=speaker.display_name,
+                            profile_id=speaker.id,
+                            assignment_status="confirmed",
+                            provenance="manual",
+                        ),
+                    )
+                    if item.speaker_group_id == speaker_group_id
+                    else item
+                    for item in current.groups
+                ],
+                segments=current.segments,
+            )
+            return speaker, revision
 
     def restore_revision(
         self,

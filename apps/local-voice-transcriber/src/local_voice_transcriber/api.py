@@ -194,6 +194,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.jobs_repository,
             app.state.editor_repository,
             app.state.voice_directory_repository,
+            app.state.voice_directory_service,
             app.state.vector_store,
         )
         app.state.asr_ready = dispatcher is not None
@@ -572,6 +573,7 @@ def _configure_asr_worker(
     repository: JobRepository,
     editor_repository: EditorRepository,
     voice_directory_repository: VoiceDirectoryRepository,
+    voice_directory_service: VoiceDirectoryService,
     vector_store: ZeusDBVoiceVectorStore,
 ) -> tuple[
     OneWorkerDispatcher | None,
@@ -656,7 +658,13 @@ def _configure_asr_worker(
         normalizer,
         asr_adapter,
         jobs_root=settings.data_dir / "jobs",
-        publisher=AsrBaselinePublisher(repository, editor_repository),
+        publisher=AsrBaselinePublisher(
+            repository,
+            editor_repository,
+            active_profile_label=lambda profile_id: voice_directory_service.require_active_profile(
+                profile_id
+            ).display_name,
+        ),
         diarizer=diarizer,
         voice_matcher=voice_matcher,
     )

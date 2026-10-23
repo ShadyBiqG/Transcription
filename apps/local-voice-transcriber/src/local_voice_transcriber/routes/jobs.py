@@ -16,7 +16,7 @@ from fastapi import APIRouter, File, Header, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
 
 from ..auth import ApiError, CsrfSessionDependency, SessionDependency
-from ..jobs import Job, JobRepository, JobRun
+from ..jobs import Job, JobRepository, JobRun, JobStatus
 from ..jobs.repository import InvalidRunState
 from ..vocabulary.suggestions import suggest_for_revision
 
@@ -386,6 +386,77 @@ def _find_owned_job(repository: JobRepository, job_id: str, owner_id: str) -> Jo
         raise ApiError(404, "not_found", "Задание не найдено") from error
 
 
+def _safe_path_component(value: str) -> str | None:
+    """Допускает только один компонент пути для идентификаторов из хранилища."""
+
+    component = Path(value)
+    if (
+        not value
+        or value in {".", ".."}
+        or component.name != value
+        or component.drive
+        or component.root
+    ):
+        return None
+    return value
+
+
+def _safe_descendant(root: Path, candidate: Path) -> Path | None:
+    """Разрешает существующий либо будущий путь только внутри заданного root."""
+
+    try:
+        resolved_root = root.resolve(strict=False)
+        resolved_candidate = candidate.resolve(strict=False)
+        resolved_candidate.relative_to(resolved_root)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return resolved_candidate
+
+
+def _job_directory(request: Request, job: Job) -> Path | None:
+    job_id = _safe_path_component(job.id)
+    if job_id is None:
+        return None
+    jobs_root = request.app.state.settings.data_dir / "jobs"
+    return _safe_descendant(jobs_root, jobs_root / job_id)
+
+
+def _normalized_audio_path(request: Request, *, job: Job, owner_id: str) -> Path | None:
+    """Находит готовый WAV только в каталоге запусков того же приватного задания."""
+
+    job_directory = _job_directory(request, job)
+    if job_directory is None:
+        return None
+    for run in _repository(request).list_runs(job_id=job.id, owner_id=owner_id):
+        if run.status is not JobStatus.READY:
+            continue
+        run_id = _safe_path_component(run.id)
+        if run_id is None:
+            continue
+        normalized = _safe_descendant(
+            job_directory,
+            job_directory / "runs" / run_id / "normalized.wav",
+        )
+        if normalized is not None and normalized.is_file():
+            return normalized
+    return None
+
+
+def _source_audio_path(request: Request, *, job: Job) -> tuple[Path, _MediaFormat] | None:
+    """Возвращает исходный контейнер, если его путь остался в private data-root задания."""
+
+    job_directory = _job_directory(request, job)
+    if job_directory is None:
+        return None
+    source_path = _safe_descendant(job_directory, Path(job.source_path))
+    if source_path is None or not source_path.is_file():
+        return None
+    media_format = _MEDIA_FORMATS.get(source_path.suffix.lower())
+    if media_format is None:
+        return None
+    return source_path, media_format
+
+
 def _source_metadata(filename: str | None) -> tuple[str, _MediaFormat]:
     """Возвращает безопасное отображаемое имя и формат, заданный расширением."""
 
@@ -600,13 +671,24 @@ def cancel_job(request: Request, job_id: str, session: CsrfSessionDependency) ->
 def get_audio(request: Request, job_id: str, session: SessionDependency) -> FileResponse:
     repository = _repository(request)
     job = _find_owned_job(repository, job_id, session.user_id)
-    source_path = Path(job.source_path)
-    if not source_path.is_file():
+    normalized = _normalized_audio_path(request, job=job, owner_id=session.user_id)
+    if normalized is not None:
+        return FileResponse(
+            normalized,
+            media_type="audio/wav",
+            filename=f"{Path(job.source_name).stem}.wav",
+            content_disposition_type="inline",
+        )
+    source = _source_audio_path(request, job=job)
+    if source is None:
         raise ApiError(404, "not_found", "Аудиофайл не найден")
-    media_format = _MEDIA_FORMATS.get(source_path.suffix.lower())
-    if media_format is None:
-        raise ApiError(404, "not_found", "Формат исходного медиа недоступен")
-    return FileResponse(source_path, media_type=media_format.media_type, filename=job.source_name)
+    source_path, media_format = source
+    return FileResponse(
+        source_path,
+        media_type=media_format.media_type,
+        filename=job.source_name,
+        content_disposition_type="inline",
+    )
 
 
 @router.get("/{job_id}/source")
@@ -650,7 +732,6 @@ def get_speaker_groups(
             {
                 "id": group.speaker_group_id,
                 "label": group.label_snapshot,
-                "profile_id": group.profile_id,
                 "assignment_status": group.assignment_status,
                 "requires_review": any(
                     group.speaker_group_id in segment.speaker_group_ids and segment.requires_review

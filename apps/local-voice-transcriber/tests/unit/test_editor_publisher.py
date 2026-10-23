@@ -103,7 +103,7 @@ def test_publisher_creates_local_speaker_groups_without_profile_assignment(tmp_p
     ]
 
 
-def test_publisher_projects_automatic_group_match_without_vector_data(
+def test_publisher_projects_canonical_name_for_automatic_group_match_without_vector_data(
     tmp_path: Path,
 ) -> None:
     jobs, editor, job, run = _prepared_job_and_run(tmp_path)
@@ -138,7 +138,13 @@ def test_publisher_projects_automatic_group_match_without_vector_data(
         reason="Пройдены калиброванные условия.",
     )
 
-    revision = AsrBaselinePublisher(jobs, editor).publish(
+    revision = AsrBaselinePublisher(
+        jobs,
+        editor,
+        active_profile_label=lambda profile_id: (
+            "Алексей Иванов" if profile_id == "profile-alex" else None
+        ),
+    ).publish(
         job,
         run,
         diarization_intervals=(
@@ -162,11 +168,79 @@ def test_publisher_projects_automatic_group_match_without_vector_data(
     )
 
     group = revision.groups[0]
-    assert (group.profile_id, group.assignment_status, group.provenance) == (
+    assert (group.label_snapshot, group.profile_id, group.assignment_status, group.provenance) == (
+        "Алексей Иванов",
         "profile-alex",
         "auto_assigned",
         "automatic",
     )
+
+
+def test_publisher_keeps_generic_label_when_automatic_profile_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    jobs, editor, job, run = _prepared_job_and_run(tmp_path)
+    jobs.store_asr_recognition(
+        run_id=run.id,
+        recognition=AsrRecognition(
+            language="ru",
+            segments=(
+                AsrSegment(
+                    start_ms=0,
+                    end_ms=1_000,
+                    text="Реплика",
+                    confidence=None,
+                    tokens=(),
+                    words=(),
+                    word_timing_status="unavailable",
+                ),
+            ),
+        ),
+    )
+    decision = VoiceMatchDecision(
+        status=VoiceMatchStatus.AUTO_ASSIGNED,
+        provenance=DecisionProvenance.AUTOMATIC,
+        selected_profile_id="profile-missing",
+        candidates=(),
+        best_distance=0.1,
+        second_distance=None,
+        margin=None,
+        evidence_count=1,
+        coverage=1.0,
+        has_overlap=False,
+        reason="Пройдены калиброванные условия.",
+    )
+
+    revision = AsrBaselinePublisher(
+        jobs,
+        editor,
+        active_profile_label=lambda _profile_id: (_ for _ in ()).throw(LookupError()),
+    ).publish(
+        job,
+        run,
+        diarization_intervals=(
+            DiarizationInterval(
+                interval_id="speaker-0",
+                start_ms=0,
+                end_ms=1_000,
+                raw_speaker_label="0",
+                speaker_group_id="local-speaker:0",
+            ),
+        ),
+        voice_matches=(
+            AutomaticSpeakerGroupMatch(
+                speaker_group_id="local-speaker:0",
+                decision=decision,
+                profile_id="profile-missing",
+                confidence=None,
+                provenance=DecisionProvenance.AUTOMATIC,
+            ),
+        ),
+    )
+
+    group = revision.groups[0]
+    assert group.label_snapshot == "Говорящий 1"
+    assert group.assignment_status == "auto_assigned"
 
 
 def _prepared_job_and_run(tmp_path: Path):

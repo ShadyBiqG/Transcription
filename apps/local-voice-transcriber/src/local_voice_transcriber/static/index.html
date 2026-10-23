@@ -4,13 +4,27 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Transcription Next</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20261023-scriberr-1">
+    <link rel="stylesheet" href="/static/styles.css?v=20261023-compact-1">
   </head>
   <body>
     <main class="shell">
       <header class="topbar">
-        <div class="brand"><span class="brand-mark" aria-hidden="true">⌁</span><div><p class="eyebrow">Локальная обработка</p><h1>Transcription Next</h1></div></div>
-        <div class="session" id="session-state">Проверяем сессию…</div>
+        <div class="brand" id="go-to-jobs" role="button" tabindex="0" aria-label="Перейти к записям" title="К записям"><span class="brand-mark" aria-hidden="true">⌁</span><h1>Transcription Next</h1></div>
+        <div class="topbar-actions">
+          <button type="button" class="add-recording-button" id="add-recording-button" hidden aria-label="Добавить запись" title="Добавить запись"><span aria-hidden="true">+</span><span class="add-recording-label">Добавить</span></button>
+          <details class="workspace-menu" id="workspace-menu" hidden>
+            <summary aria-label="Открыть меню" title="Меню"><span aria-hidden="true">⋮</span></summary>
+            <div class="workspace-menu-panel">
+              <p class="session" id="session-state">Проверяем сессию…</p>
+              <button type="button" class="menu-item" data-view="jobs">Записи</button>
+              <button type="button" class="menu-item" data-view="vocabulary">Словарь</button>
+              <button type="button" class="menu-item admin-only" data-view="profiles" hidden>Голосовые профили</button>
+              <button type="button" class="menu-item admin-only" data-view="admin" hidden>Администрирование</button>
+              <hr>
+              <button type="button" class="menu-item" id="logout-button">Выйти</button>
+            </div>
+          </details>
+        </div>
       </header>
       <section class="notice" id="notice" hidden aria-live="polite"></section>
       <section class="auth-panel card" id="auth-panel" aria-label="Доступ к сервису">
@@ -33,29 +47,22 @@
         </form>
       </section>
       <section id="workspace" hidden>
-        <nav class="tabs" aria-label="Разделы">
-          <button class="tab active" data-view="jobs" aria-current="page">Мои записи</button>
-          <button class="tab" data-view="profiles">Голосовые профили</button>
-          <button class="tab" data-view="vocabulary">Словарь</button>
-          <button class="tab" data-view="editor">Редактор</button>
-          <button class="tab admin-only" data-view="admin" hidden>Администрирование</button>
-          <button class="tab" id="logout-button">Выйти</button>
-        </nav>
         <section class="view active" id="jobs-view">
           <div class="view-header">
-            <div><p class="eyebrow">Личная рабочая область</p><h2>Записи встреч</h2><p class="muted">Каждая запись видна только вам. Готовую транскрипцию можно открыть и отредактировать.</p></div>
-            <button type="button" id="refresh-jobs-button" class="secondary">Обновить список</button>
+            <div><p class="eyebrow">Личная рабочая область</p><h2>Записи</h2></div>
+            <button type="button" id="refresh-jobs-button" class="icon-button secondary" aria-label="Обновить список" title="Обновить список"><span aria-hidden="true">↻</span></button>
           </div>
-          <form id="upload-form" class="upload-form card">
-            <div class="upload-heading"><span class="step" aria-hidden="true">1</span><div><h3>Новая транскрипция</h3><p class="muted">Добавьте запись — она сразу попадёт в личную очередь обработки.</p></div></div>
-            <label class="upload-file-label" for="media-input">
-              <span class="upload-icon" aria-hidden="true">↥</span>
-              <span class="upload-copy"><strong>Выберите запись встречи</strong><small>Поддерживаются .webm, .mp3, .wav, .m4a, .aac, .ogg, .opus, .mp4 и .mov</small></span>
-              <span class="choose-file">Выбрать файл</span>
-              <input id="media-input" name="media" type="file" accept=".webm,.mp3,.wav,.m4a,.aac,.ogg,.opus,.mp4,.mov,video/webm,audio/webm,audio/mpeg,audio/wav,audio/mp4,audio/aac,audio/ogg,video/mp4,video/quicktime" required>
-            </label>
-            <div class="upload-actions">
-              <div><span id="selected-media" class="selected-media" aria-live="polite">Файл не выбран</span><p class="upload-hint">Файл не отправляется во внешние сервисы.</p></div>
+          <div id="recording-dropzone" class="recording-dropzone" role="button" tabindex="0" aria-describedby="recording-dropzone-hint">
+            <span class="dropzone-plus" aria-hidden="true">+</span>
+            <span><strong>Добавить запись</strong><small id="recording-dropzone-hint">Перетащите файл сюда или выберите с устройства</small></span>
+          </div>
+          <form id="upload-form" class="upload-form job-draft card" hidden>
+            <input id="media-input" name="media" type="file" accept=".webm,.mp3,.wav,.m4a,.aac,.ogg,.opus,.mp4,.mov,video/webm,audio/webm,audio/mpeg,audio/wav,audio/mp4,audio/aac,audio/ogg,video/mp4,video/quicktime" required>
+            <div class="job-file-icon" aria-hidden="true">♫</div>
+            <div class="draft-detail"><strong id="selected-media" class="selected-media" aria-live="polite">Файл не выбран</strong><small class="upload-hint">Файл обрабатывается только на этом сервере.</small></div>
+            <div class="draft-actions">
+              <button type="button" id="replace-media-button" class="secondary">Заменить</button>
+              <button type="button" id="discard-media-button" class="secondary" aria-label="Убрать выбранный файл" title="Убрать файл">×</button>
               <button type="submit" id="upload-and-start-button" disabled>Загрузить и транскрибировать</button>
             </div>
           </form>
@@ -82,12 +89,12 @@
           <div id="vocabulary-list" class="profile-list"></div>
         </section>
         <section class="view" id="editor-view">
-          <div class="view-header"><div><p class="eyebrow">Проверка и исправление</p><h2 id="editor-title">Редактор</h2></div><span class="pill" id="editor-status">Выберите готовую запись</span></div>
+          <div class="view-header"><div><p class="eyebrow">Проверка и исправление</p><h2 id="editor-title">Редактор</h2></div><div class="editor-header-actions"><span class="pill" id="editor-status">Выберите готовую запись</span><button type="button" id="back-to-jobs-button" class="secondary">К записям</button></div></div>
           <div id="editor-conflict" class="notice error" hidden role="alert"><p id="editor-conflict-message"></p><div class="job-actions"><button type="button" id="copy-editor-draft" class="secondary">Скопировать мои правки</button><button type="button" id="reload-editor" class="secondary">Обновить с сервера</button></div></div>
           <div class="editor-layout">
-            <section class="card player-card"><div class="waveform" aria-label="Шкала аудио"><span></span></div><audio id="audio-player" controls preload="metadata"></audio><div id="subtitle-line" class="subtitle-line">Субтитры появятся после обработки.</div></section>
-            <aside class="card groups-card"><h3>Группы говорящих</h3><p class="muted">Исправьте имя или назначьте общий профиль один раз для всей группы.</p><div id="groups-list"><p class="muted">Нет выбранной записи.</p></div></aside>
-            <section class="card transcript-card"><div class="transcript-heading"><div><h3>Транскрипция</h3><p class="muted" id="editor-help">Выберите готовую запись.</p></div><button type="button" id="save-editor-button" disabled>Сохранить правки</button></div><div id="transcript-list"><p class="muted">Исходные реплики будут доступны после обработки.</p></div></section>
+            <section class="card player-card"><div class="waveform" aria-label="Шкала аудио"><span></span></div><audio id="audio-player" controls preload="metadata"></audio><p id="audio-help" class="audio-help" hidden role="status"></p><div id="subtitle-line" class="subtitle-line">Субтитры появятся после обработки.</div></section>
+            <aside class="card groups-card"><h3>Говорящие</h3><p class="muted">Укажите имя и фамилию один раз для всей группы — оно применится ко всем её репликам.</p><div id="groups-list"><p class="muted">Нет выбранной записи.</p></div></aside>
+            <section class="card transcript-card"><div class="transcript-heading"><div><h3>Транскрипция</h3><p class="muted" id="editor-help">Выберите готовую запись.</p></div><div class="transcript-actions"><button type="button" id="download-text-button" class="secondary" hidden>Скачать .txt</button><button type="button" id="save-editor-button" disabled>Сохранить правки</button></div></div><div id="transcript-list"><p class="muted">Исходные реплики будут доступны после обработки.</p></div></section>
           </div>
         </section>
         <section class="view" id="admin-view">
@@ -97,6 +104,6 @@
         </section>
       </section>
     </main>
-    <script src="/static/app.js?v=20261023-scriberr-1" defer></script>
+    <script src="/static/app.js?v=20261023-compact-1" defer></script>
   </body>
 </html>
