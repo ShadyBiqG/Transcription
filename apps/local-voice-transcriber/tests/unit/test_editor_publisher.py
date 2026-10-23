@@ -91,8 +91,8 @@ def test_publisher_creates_local_speaker_groups_without_profile_assignment(tmp_p
         for group in revision.groups
     ]
     assert published_groups == [
-        ("local-speaker:0", "Говорящий 1", None),
-        ("local-speaker:1", "Говорящий 2", None),
+        ("local-speaker:0", "Спикер 1", None),
+        ("local-speaker:1", "Спикер 2", None),
     ]
     assert [
         (segment.primary_group_id, segment.speaker_group_ids, segment.requires_review)
@@ -239,7 +239,7 @@ def test_publisher_keeps_generic_label_when_automatic_profile_is_unavailable(
     )
 
     group = revision.groups[0]
-    assert group.label_snapshot == "Говорящий 1"
+    assert group.label_snapshot == "Спикер 1"
     assert group.assignment_status == "auto_assigned"
 
 

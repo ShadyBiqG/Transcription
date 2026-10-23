@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..auth import ApiError, CsrfSessionDependency, SessionDependency
 from ..editor import (
+    CleanDraftInfo,
+    CleanDraftStatus,
     EditorRepository,
     GroupSnapshot,
     GroupUpdate,
@@ -16,6 +18,7 @@ from ..editor import (
     RevisionConflictError,
     TranscriptRevision,
     TranscriptRevisionInfo,
+    display_speaker_label,
 )
 from ..jobs import JobRepository
 from ..voice.repository import SpeakerIdentityUnavailableError, VoiceDirectoryError
@@ -82,11 +85,28 @@ class SpeakerIdentityRequest(BaseModel):
     expected_revision_number: int = Field(ge=1)
 
 
+class SegmentSpeakerRequest(BaseModel):
+    """Новое локальное назначение спикера для одной реплики по таймкоду."""
+
+    speaker_group_id: str = Field(min_length=1, max_length=128)
+    expected_revision_number: int = Field(ge=1)
+    comment: str | None = Field(default=None, max_length=500)
+
+
+class TranscriptViewPreferenceRequest(BaseModel):
+    """Личная настройка выбора чистого или исходного представления."""
+
+    preference: Literal["clean", "raw", "last_selected"]
+    selected_view: Literal["clean", "raw"] | None = None
+
+
 ManualPayload = Annotated[ManualRevisionRequest, Body()]
 RestorePayload = Annotated[RestoreRevisionRequest, Body()]
 MergePayload = Annotated[MergeGroupsRequest, Body()]
 UnmergePayload = Annotated[UnmergeGroupRequest, Body()]
 IdentityPayload = Annotated[SpeakerIdentityRequest, Body()]
+SegmentSpeakerPayload = Annotated[SegmentSpeakerRequest, Body()]
+ViewPreferencePayload = Annotated[TranscriptViewPreferenceRequest, Body()]
 
 
 def _editor(request: Request) -> EditorRepository:
@@ -124,7 +144,7 @@ def _revision_info_projection(info: TranscriptRevisionInfo) -> dict[str, object]
 def _group_projection(group: GroupSnapshot) -> dict[str, object]:
     return {
         "speaker_group_id": group.speaker_group_id,
-        "label": group.label_snapshot,
+        "label": display_speaker_label(group.label_snapshot),
         "assignment_status": group.assignment_status,
         "provenance": group.provenance,
         "merged_into_group_id": group.merged_into_group_id,
@@ -176,18 +196,18 @@ def _translate_speaker_identity_error(error: Exception) -> ApiError:
         return ApiError(
             422,
             "speaker_identity_unavailable",
-            "Указанная подпись говорящего сейчас недоступна",
+            "Указанная подпись спикера сейчас недоступна",
         )
     if isinstance(error, VoiceDirectoryError):
         return ApiError(
             422,
             "speaker_identity_unavailable",
-            "Не удалось назначить подпись говорящего",
+            "Не удалось назначить подпись спикера",
         )
     if isinstance(error, (InvalidGroupOperationError, ValueError)):
-        return ApiError(422, "invalid_speaker_identity", "Укажите корректную подпись говорящего")
+        return ApiError(422, "invalid_speaker_identity", "Укажите корректную подпись спикера")
     if isinstance(error, KeyError):
-        return ApiError(404, "not_found", "Группа говорящего не найдена")
+        return ApiError(404, "not_found", "Группа спикера не найдена")
     return ApiError(409, "transcript_unavailable", "Транскрипция ещё не опубликована")
 
 
@@ -197,14 +217,68 @@ def _transcript_text_export(revision: TranscriptRevision) -> str:
     groups = {group.speaker_group_id: group for group in revision.groups}
     lines = ["Транскрипция", ""]
     for segment in revision.segments:
-        label = "Говорящий"
+        label = "Спикер"
         effective_group_id = revision.effective_primary_group_id(segment)
         if effective_group_id is not None:
             effective_group = groups.get(effective_group_id)
             if effective_group is not None:
-                label = effective_group.label_snapshot
+                label = display_speaker_label(effective_group.label_snapshot)
         lines.append(f"{label}: {segment.text}")
     return "\n".join(lines) + "\n"
+
+
+def _cleaning_projection(info: CleanDraftInfo | None) -> dict[str, object]:
+    if info is None:
+        return {
+            "status": "not_processed",
+            "fallback_to_raw": False,
+            "message": "Чистый черновик ещё не подготовлен",
+        }
+    if info.status is CleanDraftStatus.FAILED:
+        return {
+            "status": info.status.value,
+            "fallback_to_raw": True,
+            "message": "Чистый черновик недоступен: показан исходный текст",
+        }
+    return {
+        "status": info.status.value,
+        "fallback_to_raw": False,
+        "message": (
+            "Чистый черновик подготовлен"
+            if info.status is CleanDraftStatus.APPLIED
+            else "Очистка не нашла безопасных удалений"
+        ),
+    }
+
+
+def _view_projection(
+    *,
+    preference: str,
+    requested_view: str,
+    resolved_view: str,
+    cleaning: CleanDraftInfo | None,
+) -> dict[str, object]:
+    return {
+        "preference": preference,
+        "requested": requested_view,
+        "resolved": resolved_view,
+        "cleaning": _cleaning_projection(cleaning),
+    }
+
+
+def _resolve_requested_view(
+    request: Request,
+    *,
+    owner_id: str,
+    job_id: str,
+    requested_view: Literal["clean", "raw"] | None,
+) -> tuple[str, str]:
+    preference = request.app.state.database.get_transcript_view_preference(owner_id)
+    if requested_view is not None:
+        return preference, requested_view
+    if preference == "last_selected":
+        return preference, _editor(request).get_selected_view(owner_id=owner_id, job_id=job_id)
+    return preference, preference
 
 
 @router.get("")
@@ -212,15 +286,98 @@ def get_current_transcript(
     request: Request,
     job_id: str,
     session: SessionDependency,
+    view: Literal["clean", "raw"] | None = Query(default=None),
 ) -> dict[str, object]:
-    """Возвращает текущий immutable-снимок только владельцу задания."""
+    """Возвращает чистый либо исходный immutable-снимок только владельцу."""
 
     _require_owned_job(request, job_id=job_id, owner_id=session.user_id)
     try:
-        revision = _editor(request).get_current_revision(owner_id=session.user_id, job_id=job_id)
+        preference, requested_view = _resolve_requested_view(
+            request,
+            owner_id=session.user_id,
+            job_id=job_id,
+            requested_view=view,
+        )
+        cleaning = _editor(request).get_clean_draft_info(
+            owner_id=session.user_id,
+            job_id=job_id,
+        )
+        fallback_to_raw = (
+            requested_view == "clean"
+            and cleaning is not None
+            and cleaning.status is CleanDraftStatus.FAILED
+        )
+        resolved_view = "raw" if requested_view == "raw" or fallback_to_raw else "clean"
+        revision = (
+            _editor(request).get_baseline_revision(owner_id=session.user_id, job_id=job_id)
+            if resolved_view == "raw"
+            else _editor(request).get_current_revision(owner_id=session.user_id, job_id=job_id)
+        )
     except Exception as error:
         raise _translate_editor_error(error) from error
-    return _revision_projection(revision)
+    return {
+        **_revision_projection(revision),
+        "view": _view_projection(
+            preference=preference,
+            requested_view=requested_view,
+            resolved_view=resolved_view,
+            cleaning=cleaning,
+        ),
+    }
+
+
+@router.get("/view-preference")
+def get_transcript_view_preference(
+    request: Request,
+    job_id: str,
+    session: SessionDependency,
+) -> dict[str, str]:
+    """Возвращает только личную настройку текущего владельца записи."""
+
+    _require_owned_job(request, job_id=job_id, owner_id=session.user_id)
+    try:
+        preference = request.app.state.database.get_transcript_view_preference(session.user_id)
+        selected_view = _editor(request).get_selected_view(
+            owner_id=session.user_id,
+            job_id=job_id,
+        )
+    except Exception as error:
+        raise _translate_editor_error(error) from error
+    return {"preference": preference, "selected_view": selected_view}
+
+
+@router.patch("/view-preference")
+def update_transcript_view_preference(
+    request: Request,
+    job_id: str,
+    payload: ViewPreferencePayload,
+    session: CsrfSessionDependency,
+) -> dict[str, str]:
+    """Сохраняет личный default и, при выборе, последнюю открытую проекцию."""
+
+    _require_owned_job(request, job_id=job_id, owner_id=session.user_id)
+    selected_view = payload.selected_view
+    if selected_view is None and payload.preference in {"clean", "raw"}:
+        selected_view = payload.preference
+    try:
+        preference = request.app.state.database.set_transcript_view_preference(
+            user_id=session.user_id,
+            preference=payload.preference,
+        )
+        if selected_view is not None:
+            _editor(request).set_selected_view(
+                owner_id=session.user_id,
+                job_id=job_id,
+                selected_view=selected_view,
+            )
+        else:
+            selected_view = _editor(request).get_selected_view(
+                owner_id=session.user_id,
+                job_id=job_id,
+            )
+    except Exception as error:
+        raise _translate_editor_error(error) from error
+    return {"preference": preference, "selected_view": selected_view}
 
 
 @router.get("/export")
@@ -305,6 +462,32 @@ def create_manual_revision(
             expected_current_revision=payload.expected_revision_number,
             segment_texts=payload.segment_texts,
             group_updates=group_updates,
+            created_by=session.user_id,
+            comment=payload.comment,
+        )
+    except Exception as error:
+        raise _translate_editor_error(error) from error
+    return _revision_projection(revision)
+
+
+@router.put("/segments/{source_segment_id}/speaker")
+def assign_segment_speaker(
+    request: Request,
+    job_id: str,
+    source_segment_id: str,
+    payload: SegmentSpeakerPayload,
+    session: CsrfSessionDependency,
+) -> dict[str, object]:
+    """Изменяет спикера одной реплики только через новую локальную ревизию."""
+
+    _require_owned_job(request, job_id=job_id, owner_id=session.user_id)
+    try:
+        revision = _editor(request).assign_segment_speaker(
+            owner_id=session.user_id,
+            job_id=job_id,
+            source_segment_id=source_segment_id,
+            speaker_group_id=payload.speaker_group_id,
+            expected_current_revision=payload.expected_revision_number,
             created_by=session.user_id,
             comment=payload.comment,
         )

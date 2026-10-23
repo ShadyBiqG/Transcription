@@ -33,6 +33,12 @@ from .auth import (
     validate_password,
     verify_password,
 )
+from .cleaning import (
+    FallbackTranscriptCleaner,
+    LocalLlamaCppDeletionCleaner,
+    RuleBasedDeletionCleaner,
+    TranscriptCleaner,
+)
 from .config import Settings
 from .database import Database, LastActiveAdminError
 from .diarization import (
@@ -664,6 +670,7 @@ def _configure_asr_worker(
             active_profile_label=lambda profile_id: voice_directory_service.require_active_profile(
                 profile_id
             ).display_name,
+            cleaner=_configured_transcript_cleaner(settings),
         ),
         diarizer=diarizer,
         voice_matcher=voice_matcher,
@@ -681,6 +688,29 @@ def _configure_asr_worker(
         voice_reason,
         embedding_adapter,
         diarization_pack,
+    )
+
+
+def _configured_transcript_cleaner(settings: Settings) -> TranscriptCleaner:
+    """Собирает только локальный optional cleaner с безусловным offline fallback.
+
+    Установщик пока не управляет отдельным процессом llama.cpp, поэтому даже
+    включённая, но неполная конфигурация никогда не делает ASR job ошибочным.
+    """
+
+    fallback = RuleBasedDeletionCleaner()
+    if (
+        not settings.cleaner_enabled
+        or settings.cleaner_endpoint is None
+        or settings.cleaner_model_path is None
+        or settings.cleaner_llama_server_path is None
+        or not settings.cleaner_model_path.is_file()
+        or not settings.cleaner_llama_server_path.is_file()
+    ):
+        return FallbackTranscriptCleaner(fallback)
+    return FallbackTranscriptCleaner(
+        fallback,
+        primary=LocalLlamaCppDeletionCleaner(settings.cleaner_endpoint),
     )
 
 

@@ -175,6 +175,27 @@ if ($LASTEXITCODE -ne 0) {
     throw "The exact service Python cannot load the installed candidate package. Run install-windows.ps1 first; setting PYTHONPATH is not required."
 }
 
+# Очиститель необязателен. При его сбое вложенный установщик оставляет корректную
+# метку false и возвращает успех, чтобы основная служба использовала
+# детерминированный offline fallback, а не становилась недоступной.
+$cleanerServiceInstaller = Join-Path $PSScriptRoot "install-windows-cleaner-service.ps1"
+if (-not (Test-Path -LiteralPath $cleanerServiceInstaller -PathType Leaf)) {
+    throw "The local cleaner service installer was not found: $cleanerServiceInstaller"
+}
+$powerShellPath = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+$cleanerInstallerOutput = & $powerShellPath -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+    -File $cleanerServiceInstaller -DataRoot $dataRootPath 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning "Локальный очиститель не был подготовлен: $($cleanerInstallerOutput | Out-String). Основная служба продолжит установку с rule-based очисткой."
+}
+else {
+    $cleanerMessage = ($cleanerInstallerOutput | Out-String).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($cleanerMessage)) {
+        Write-Host $cleanerMessage
+    }
+}
+. $environmentFile
+
 $serviceRoot = Join-Path $dataRootPath "windows-service"
 $serviceLogPath = Join-Path $serviceRoot "logs"
 $wrapperPath = Join-Path $serviceRoot "$serviceName.exe"
@@ -223,7 +244,6 @@ else {
     }
 }
 
-$powerShellPath = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $launcherPath + '"'
 $configuration = @"
 <?xml version="1.0" encoding="utf-8"?>

@@ -6,6 +6,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .voice.models import MatchingThresholds, QualityPolicy
 
@@ -49,6 +50,40 @@ def _optional_non_negative_float(value: str | None, *, name: str) -> float | Non
     return _as_non_negative_float(value, name=name)
 
 
+def _optional_path(
+    value: str | None,
+    *,
+    name: str,
+    root: Path,
+    required_parent: Path | None = None,
+) -> Path | None:
+    if value is None or not value.strip():
+        return None
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = root / path
+    path = path.resolve()
+    if required_parent is not None:
+        try:
+            path.relative_to(required_parent)
+        except ValueError as error:
+            raise ConfigurationError(
+                f"{name} должен находиться внутри {required_parent}"
+            ) from error
+    return path
+
+
+def _optional_loopback_http_url(value: str | None, *, name: str) -> str | None:
+    if value is None or not value.strip():
+        return None
+    parsed = urlparse(value.strip())
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "::1", "localhost"}:
+        raise ConfigurationError(f"{name} должен указывать только на локальный HTTP endpoint")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ConfigurationError(f"{name} содержит неподдерживаемые компоненты")
+    return value.strip().rstrip("/")
+
+
 def _default_voice_matching_thresholds() -> MatchingThresholds:
     """Без калибровки сопоставление всегда остаётся в fail-closed состоянии."""
 
@@ -81,6 +116,10 @@ class Settings:
     models_dir: Path | None = None
     asr_manifest_path: Path | None = None
     ffmpeg_path: Path | None = None
+    cleaner_enabled: bool = False
+    cleaner_model_path: Path | None = None
+    cleaner_llama_server_path: Path | None = None
+    cleaner_endpoint: str | None = None
     voice_matching_thresholds: MatchingThresholds = field(
         default_factory=_default_voice_matching_thresholds
     )
@@ -167,6 +206,22 @@ class Settings:
                 ffmpeg_path = root / ffmpeg_path
             ffmpeg_path = ffmpeg_path.resolve()
 
+        cleaner_model_path = _optional_path(
+            values.get("NEXT_CLEANER_MODEL_PATH"),
+            name="NEXT_CLEANER_MODEL_PATH",
+            root=models_dir,
+            required_parent=models_dir,
+        )
+        cleaner_llama_server_path = _optional_path(
+            values.get("NEXT_CLEANER_LLAMA_SERVER_PATH"),
+            name="NEXT_CLEANER_LLAMA_SERVER_PATH",
+            root=root,
+        )
+        cleaner_endpoint = _optional_loopback_http_url(
+            values.get("NEXT_CLEANER_ENDPOINT"),
+            name="NEXT_CLEANER_ENDPOINT",
+        )
+
         host = values.get("NEXT_HOST", "127.0.0.1").strip()
         if not host:
             raise ConfigurationError("NEXT_HOST не может быть пустым")
@@ -240,5 +295,12 @@ class Settings:
             models_dir=models_dir,
             asr_manifest_path=asr_manifest_path,
             ffmpeg_path=ffmpeg_path,
+            cleaner_enabled=_as_bool(
+                values.get("NEXT_CLEANER_ENABLED", "false"),
+                name="NEXT_CLEANER_ENABLED",
+            ),
+            cleaner_model_path=cleaner_model_path,
+            cleaner_llama_server_path=cleaner_llama_server_path,
+            cleaner_endpoint=cleaner_endpoint,
             voice_matching_thresholds=voice_matching_thresholds,
         )

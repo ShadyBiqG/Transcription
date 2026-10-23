@@ -272,3 +272,96 @@ button { padding: .58rem .75rem; border-radius: .62rem; }
   .speaker-sample { grid-template-columns: 1fr auto; }
   .speaker-sample p, .speaker-sample strong { grid-column: 1 / -1; }
 }
+
+/* Единый компактный редактор: плеер и короткие реплики остаются в поле зрения. */
+.shell { width: min(940px, calc(100% - 2rem)); }
+.editor-view-header { align-items: center; }
+.editor-header-actions { max-width: 100%; }
+.player-card {
+  position: sticky;
+  z-index: 4;
+  top: 5.15rem;
+  box-shadow: 0 8px 22px rgb(30 41 59 / 8%);
+}
+.player-card .waveform { height: 32px; }
+.draft-mode-switch {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid #dbe3ed;
+  border-radius: .62rem;
+  background: #f7f9fc;
+}
+.draft-mode-switch button {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  color: #5c6b80;
+  font-size: .78rem;
+  font-weight: 700;
+}
+.draft-mode-switch button[aria-pressed="true"] { background: #fff0e7; color: #bf5613; }
+.draft-mode-switch button:hover { box-shadow: none; }
+.draft-status {
+  margin: .5rem 0 0;
+  padding: .5rem .65rem;
+  border-left: 3px solid #aab7c8;
+  border-radius: .4rem;
+  background: #f7f9fc;
+  color: #627187;
+  font-size: .82rem;
+}
+.source-segment { cursor: default; color: #627187; }
+.transcript-turn { padding-block: .65rem; }
+.transcript-text { font-size: .96rem; line-height: 1.55; }
+.turn-speaker { color: #c95c1a !important; font-size: .78rem; letter-spacing: .01em; text-transform: none; }
+
+/* Окно «Изменить спикеров» не открывает каталог людей: только группы текущей записи. */
+.speakers-dialog { width: min(50rem, calc(100% - 2rem)); }
+.speakers-panel { gap: .8rem; padding: 1rem; }
+.dialog-heading-actions { display: flex; gap: .45rem; align-items: center; }
+.speaker-card {
+  display: grid;
+  gap: .6rem;
+  padding: .8rem;
+  border: 1px solid #e1e7ef;
+  border-radius: .8rem;
+  background: #fff;
+}
+.speaker-card-heading { display: flex; align-items: start; justify-content: space-between; gap: .75rem; }
+.speaker-card-identity { min-width: 0; }
+.speaker-card h3 { margin: 0; color: #27364a; font-size: .98rem; }
+.speaker-card-actions { display: flex; flex-wrap: wrap; gap: .4rem; justify-content: flex-end; }
+.speaker-card-actions button { padding: .38rem .55rem; font-size: .8rem; white-space: nowrap; }
+.speaker-metrics { margin: .2rem 0 0; color: #6c7b90; font-size: .8rem; }
+.speaker-excerpt { display: -webkit-box; margin: 0; overflow: hidden; color: #526174; font-size: .88rem; line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.speaker-identity { margin-top: .05rem; }
+.speaker-merge { margin: 0; border-top: 1px solid #edf0f4; padding-top: .6rem; }
+.speaker-merge > div { gap: .5rem; }
+.speaker-merge-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .45rem; }
+.speaker-merge-controls select { min-width: 0; padding: .42rem .55rem; }
+.speaker-unmerge-row { display: flex; align-items: center; justify-content: space-between; gap: .5rem; color: #627187; font-size: .84rem; }
+.speaker-unmerge-row button { flex: 0 0 auto; padding: .38rem .55rem; }
+.speaker-timeline-dialog { width: min(44rem, calc(100% - 2rem)); }
+#speaker-timeline-list { display: grid; gap: 0; }
+.speaker-timeline-row { display: grid; grid-template-columns: 4.35rem minmax(0, 1fr); gap: .7rem; padding: .65rem 0; border-bottom: 1px solid #e7ecf2; }
+.speaker-timeline-row:first-child { border-top: 1px solid #e7ecf2; }
+.speaker-timeline-row p { margin: 0; color: #293649; line-height: 1.5; white-space: pre-wrap; }
+
+@media (max-width: 720px) {
+  .shell { width: min(100% - 1rem, 940px); }
+  .editor-view-header { align-items: flex-start; }
+  .player-card { top: 4.35rem; padding: .75rem; }
+  .player-card .waveform { height: 22px; margin-bottom: .45rem; }
+  .editor-header-actions { gap: .35rem; }
+  .editor-header-actions .pill { display: none; }
+  .transcript-actions { gap: .35rem; }
+  .draft-mode-switch { width: 100%; }
+  .draft-mode-switch button { flex: 1; padding-inline: .45rem; }
+  .speakers-panel { padding: .85rem; }
+  .speaker-card-heading { display: grid; grid-template-columns: 1fr; }
+  .speaker-card-actions { justify-content: flex-start; }
+  .speaker-merge-controls { grid-template-columns: 1fr; }
+  .speaker-merge-controls button { width: 100%; }
+  .dialog-heading-actions { width: 100%; justify-content: flex-end; }
+  .speaker-timeline-row { grid-template-columns: 3.8rem minmax(0, 1fr); gap: .5rem; }
+}

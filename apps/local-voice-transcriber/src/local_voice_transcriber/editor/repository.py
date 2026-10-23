@@ -9,8 +9,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from ..cleaning import (
+    CleanableSegment,
+    DeletionOnlyCandidateValidator,
+    TranscriptCleaner,
+)
 from ..voice.repository import SharedVoiceProfile, VoiceDirectoryRepository
 from .models import (
+    CleanDraftInfo,
+    CleanDraftResult,
+    CleanDraftStatus,
     GroupMergeOperation,
     GroupSnapshot,
     GroupUpdate,
@@ -144,6 +152,27 @@ class EditorRepository:
                 );
                 CREATE INDEX IF NOT EXISTS next_group_merge_operations_job_idx
                     ON next_group_merge_operations(job_id, owner_id, created_at, id);
+
+                CREATE TABLE IF NOT EXISTS next_transcript_clean_drafts (
+                    job_id TEXT PRIMARY KEY REFERENCES next_editor_jobs(job_id) ON DELETE CASCADE,
+                    owner_id TEXT NOT NULL,
+                    source_revision_id TEXT NOT NULL
+                        REFERENCES next_transcript_revisions(id) ON DELETE RESTRICT,
+                    clean_revision_id TEXT
+                        REFERENCES next_transcript_revisions(id) ON DELETE RESTRICT,
+                    status TEXT NOT NULL CHECK(status IN ('applied', 'unchanged', 'failed')),
+                    reason TEXT,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS next_transcript_clean_drafts_owner_idx
+                    ON next_transcript_clean_drafts(job_id, owner_id);
+
+                CREATE TABLE IF NOT EXISTS next_transcript_view_selections (
+                    job_id TEXT PRIMARY KEY REFERENCES next_editor_jobs(job_id) ON DELETE CASCADE,
+                    owner_id TEXT NOT NULL,
+                    selected_view TEXT NOT NULL CHECK(selected_view IN ('clean', 'raw')),
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
 
@@ -214,6 +243,212 @@ class EditorRepository:
             row = self._current_row(connection, owner_id=owner_id, job_id=job_id)
             return self._load_revision(connection, str(row["id"]))
 
+    def get_baseline_revision(self, *, owner_id: str, job_id: str) -> TranscriptRevision:
+        """Возвращает неизменяемый исходный ASR-снимок только владельцу задания."""
+
+        with self._connection() as connection:
+            self._ensure_owned_job(connection, owner_id=owner_id, job_id=job_id)
+            row = self._baseline_row(connection, owner_id=owner_id, job_id=job_id)
+            return self._load_revision(connection, str(row["id"]))
+
+    def create_clean_draft(
+        self,
+        *,
+        owner_id: str,
+        job_id: str,
+        cleaner: TranscriptCleaner,
+    ) -> CleanDraftResult:
+        """Создаёт одну проверенную automatic-ревизию без изменения baseline.
+
+        Отказ, недоступность или некорректный ответ очистителя не прерывают
+        транскрибацию: вместо этого сохраняется безопасный статус ``failed`` и
+        вызывающий код использует исходный ASR-снимок.
+        """
+
+        with self._connection() as connection:
+            self._ensure_owned_job(connection, owner_id=owner_id, job_id=job_id)
+            existing = connection.execute(
+                """
+                SELECT * FROM next_transcript_clean_drafts
+                WHERE job_id = ? AND owner_id = ?
+                """,
+                (job_id, owner_id),
+            ).fetchone()
+            if existing is not None:
+                info = _to_clean_draft_info(existing)
+                revision_id = info.clean_revision_id or info.source_revision_id
+                return CleanDraftResult(
+                    info=info,
+                    revision=self._load_revision(connection, revision_id),
+                )
+            baseline_row = self._baseline_row(connection, owner_id=owner_id, job_id=job_id)
+            baseline = self._load_revision(connection, str(baseline_row["id"]))
+            current = self._load_revision(
+                connection,
+                str(self._current_row(connection, owner_id=owner_id, job_id=job_id)["id"]),
+            )
+
+        if current.info.id != baseline.info.id:
+            return _transient_clean_draft_failure(
+                owner_id=owner_id,
+                job_id=job_id,
+                source_revision=baseline,
+                revision=current,
+            )
+        cleanable_segments = _cleanable_segments(baseline)
+        try:
+            candidate = cleaner.clean(cleanable_segments)
+            DeletionOnlyCandidateValidator().validate(cleanable_segments, candidate)
+        except Exception:
+            candidate = None
+
+        with self._transaction() as connection:
+            self._ensure_owned_job(connection, owner_id=owner_id, job_id=job_id)
+            existing = connection.execute(
+                """
+                SELECT * FROM next_transcript_clean_drafts
+                WHERE job_id = ? AND owner_id = ?
+                """,
+                (job_id, owner_id),
+            ).fetchone()
+            if existing is not None:
+                info = _to_clean_draft_info(existing)
+                revision_id = info.clean_revision_id or info.source_revision_id
+                return CleanDraftResult(
+                    info=info,
+                    revision=self._load_revision(connection, revision_id),
+                )
+
+            baseline = self._load_revision(
+                connection,
+                str(self._baseline_row(connection, owner_id=owner_id, job_id=job_id)["id"]),
+            )
+            current = self._load_revision(
+                connection,
+                str(self._current_row(connection, owner_id=owner_id, job_id=job_id)["id"]),
+            )
+            if current.info.id != baseline.info.id:
+                return _transient_clean_draft_failure(
+                    owner_id=owner_id,
+                    job_id=job_id,
+                    source_revision=baseline,
+                    revision=current,
+                )
+            if candidate is None:
+                return self._record_clean_draft_failure(
+                    connection,
+                    owner_id=owner_id,
+                    job_id=job_id,
+                    source_revision=baseline,
+                    reason="Локальный очиститель недоступен или отклонил небезопасный результат",
+                )
+            try:
+                changed_texts = DeletionOnlyCandidateValidator().validate(
+                    _cleanable_segments(baseline),
+                    candidate,
+                )
+            except Exception:
+                return self._record_clean_draft_failure(
+                    connection,
+                    owner_id=owner_id,
+                    job_id=job_id,
+                    source_revision=baseline,
+                    reason="Локальный очиститель недоступен или отклонил небезопасный результат",
+                )
+
+            if not changed_texts:
+                info = self._insert_clean_draft_info(
+                    connection,
+                    owner_id=owner_id,
+                    job_id=job_id,
+                    source_revision_id=baseline.info.id,
+                    clean_revision_id=baseline.info.id,
+                    status=CleanDraftStatus.UNCHANGED,
+                    reason=None,
+                )
+                return CleanDraftResult(info=info, revision=baseline)
+
+            clean_segments = tuple(
+                RevisionSegment(
+                    source_segment_id=segment.source_segment_id,
+                    ordinal=segment.ordinal,
+                    text=changed_texts.get(segment.source_segment_id, segment.text),
+                    primary_group_id=segment.primary_group_id,
+                    speaker_group_ids=segment.speaker_group_ids,
+                    requires_review=segment.requires_review,
+                )
+                for segment in baseline.segments
+            )
+            clean_revision = self._append_revision(
+                connection,
+                current=baseline,
+                origin=RevisionOrigin.AUTOMATIC,
+                created_by=None,
+                comment="Локальный чистый черновик",
+                groups=baseline.groups,
+                segments=clean_segments,
+            )
+            info = self._insert_clean_draft_info(
+                connection,
+                owner_id=owner_id,
+                job_id=job_id,
+                source_revision_id=baseline.info.id,
+                clean_revision_id=clean_revision.info.id,
+                status=CleanDraftStatus.APPLIED,
+                reason=None,
+            )
+            return CleanDraftResult(info=info, revision=clean_revision)
+
+    def get_clean_draft_info(self, *, owner_id: str, job_id: str) -> CleanDraftInfo | None:
+        """Возвращает безопасный статус очистки без внутренних данных раннера."""
+
+        with self._connection() as connection:
+            self._ensure_owned_job(connection, owner_id=owner_id, job_id=job_id)
+            row = connection.execute(
+                """
+                SELECT * FROM next_transcript_clean_drafts
+                WHERE job_id = ? AND owner_id = ?
+                """,
+                (job_id, owner_id),
+            ).fetchone()
+        return _to_clean_draft_info(row) if row is not None else None
+
+    def get_selected_view(self, *, owner_id: str, job_id: str) -> str:
+        """Возвращает последнее явно выбранное представление текущего пользователя."""
+
+        with self._connection() as connection:
+            self._ensure_owned_job(connection, owner_id=owner_id, job_id=job_id)
+            row = connection.execute(
+                """
+                SELECT selected_view FROM next_transcript_view_selections
+                WHERE job_id = ? AND owner_id = ?
+                """,
+                (job_id, owner_id),
+            ).fetchone()
+        return str(row["selected_view"]) if row is not None else "clean"
+
+    def set_selected_view(self, *, owner_id: str, job_id: str, selected_view: str) -> str:
+        """Запоминает clean/raw только в рамках принадлежащей пользователю записи."""
+
+        if selected_view not in {"clean", "raw"}:
+            raise ValueError("Неизвестное представление транскрипции")
+        with self._transaction() as connection:
+            self._ensure_owned_job(connection, owner_id=owner_id, job_id=job_id)
+            connection.execute(
+                """
+                INSERT INTO next_transcript_view_selections(
+                    job_id, owner_id, selected_view, updated_at
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    owner_id = excluded.owner_id,
+                    selected_view = excluded.selected_view,
+                    updated_at = excluded.updated_at
+                """,
+                (job_id, owner_id, selected_view, _utc_now()),
+            )
+        return selected_view
+
     def get_revision(
         self, *, owner_id: str, job_id: str, revision_id: str
     ) -> TranscriptRevision:
@@ -278,6 +513,16 @@ class EditorRepository:
             unknown_groups = set(requested_groups).difference(known_group_ids)
             if unknown_groups:
                 raise KeyError("Изменяемая группа не найдена")
+            merged_groups = {
+                group.speaker_group_id
+                for group in groups
+                if group.speaker_group_id in requested_groups
+                and group.merged_into_group_id is not None
+            }
+            if merged_groups:
+                raise InvalidGroupOperationError(
+                    "Нельзя менять подпись объединённой группы спикера"
+                )
             segments = [
                 RevisionSegment(
                     source_segment_id=segment.source_segment_id,
@@ -565,6 +810,130 @@ class EditorRepository:
             ).fetchall()
         return [_to_merge_operation(row) for row in rows]
 
+    def assign_segment_speaker(
+        self,
+        *,
+        owner_id: str,
+        job_id: str,
+        source_segment_id: str,
+        speaker_group_id: str,
+        expected_current_revision: int,
+        created_by: str | None = None,
+        comment: str | None = None,
+    ) -> TranscriptRevision:
+        """Назначает локального неслитого спикера одной реплике новой ревизией.
+
+        Исходный ASR baseline остаётся неизменяемым. Целевая группа обязана
+        принадлежать этой записи и не может быть поглощённой при объединении.
+        """
+
+        self._validate_actor(owner_id, created_by)
+        with self._transaction() as connection:
+            current = self._require_current(
+                connection,
+                owner_id=owner_id,
+                job_id=job_id,
+                expected_current_revision=expected_current_revision,
+            )
+            groups_by_id = {group.speaker_group_id: group for group in current.groups}
+            target_group = groups_by_id.get(speaker_group_id)
+            if target_group is None:
+                raise KeyError("Группа спикера не найдена")
+            if target_group.merged_into_group_id is not None:
+                raise InvalidGroupOperationError(
+                    "Нельзя назначить реплику на объединённую группу спикера"
+                )
+            if not any(
+                segment.source_segment_id == source_segment_id for segment in current.segments
+            ):
+                raise KeyError("Отрезок транскрипции не найден")
+            segments = tuple(
+                RevisionSegment(
+                    source_segment_id=segment.source_segment_id,
+                    ordinal=segment.ordinal,
+                    text=segment.text,
+                    primary_group_id=(
+                        speaker_group_id
+                        if segment.source_segment_id == source_segment_id
+                        else segment.primary_group_id
+                    ),
+                    speaker_group_ids=(
+                        tuple(dict.fromkeys((*segment.speaker_group_ids, speaker_group_id)))
+                        if segment.source_segment_id == source_segment_id
+                        else segment.speaker_group_ids
+                    ),
+                    requires_review=segment.requires_review,
+                )
+                for segment in current.segments
+            )
+            return self._append_revision(
+                connection,
+                current=current,
+                origin=RevisionOrigin.MANUAL,
+                created_by=created_by,
+                comment=comment or "Изменён спикер реплики",
+                groups=current.groups,
+                segments=segments,
+            )
+
+    def _record_clean_draft_failure(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        owner_id: str,
+        job_id: str,
+        source_revision: TranscriptRevision,
+        reason: str,
+    ) -> CleanDraftResult:
+        info = self._insert_clean_draft_info(
+            connection,
+            owner_id=owner_id,
+            job_id=job_id,
+            source_revision_id=source_revision.info.id,
+            clean_revision_id=None,
+            status=CleanDraftStatus.FAILED,
+            reason=reason,
+        )
+        return CleanDraftResult(info=info, revision=source_revision)
+
+    @staticmethod
+    def _insert_clean_draft_info(
+        connection: sqlite3.Connection,
+        *,
+        owner_id: str,
+        job_id: str,
+        source_revision_id: str,
+        clean_revision_id: str | None,
+        status: CleanDraftStatus,
+        reason: str | None,
+    ) -> CleanDraftInfo:
+        created_at = _utc_now()
+        connection.execute(
+            """
+            INSERT INTO next_transcript_clean_drafts(
+                job_id, owner_id, source_revision_id, clean_revision_id, status, reason, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job_id,
+                owner_id,
+                source_revision_id,
+                clean_revision_id,
+                status.value,
+                reason,
+                created_at,
+            ),
+        )
+        return CleanDraftInfo(
+            job_id=job_id,
+            owner_id=owner_id,
+            source_revision_id=source_revision_id,
+            clean_revision_id=clean_revision_id,
+            status=status,
+            reason=reason,
+            created_at=created_at,
+        )
+
     def _append_revision(
         self,
         connection: sqlite3.Connection,
@@ -701,6 +1070,21 @@ class EditorRepository:
         ).fetchone()
         if row is None:
             raise KeyError("Текущая ревизия не найдена")
+        return row
+
+    @staticmethod
+    def _baseline_row(
+        connection: sqlite3.Connection, *, owner_id: str, job_id: str
+    ) -> sqlite3.Row:
+        row = connection.execute(
+            """
+            SELECT * FROM next_transcript_revisions
+            WHERE job_id = ? AND owner_id = ? AND origin = 'baseline'
+            """,
+            (job_id, owner_id),
+        ).fetchone()
+        if row is None:
+            raise KeyError("Исходная ревизия не найдена")
         return row
 
     @staticmethod
@@ -878,6 +1262,51 @@ def _to_revision_info(row: sqlite3.Row) -> TranscriptRevisionInfo:
         restored_from_id=row["restored_from_id"],
         is_current=bool(row["is_current"]),
         created_at=str(row["created_at"]),
+    )
+
+
+def _to_clean_draft_info(row: sqlite3.Row) -> CleanDraftInfo:
+    return CleanDraftInfo(
+        job_id=str(row["job_id"]),
+        owner_id=str(row["owner_id"]),
+        source_revision_id=str(row["source_revision_id"]),
+        clean_revision_id=row["clean_revision_id"],
+        status=CleanDraftStatus(row["status"]),
+        reason=row["reason"],
+        created_at=str(row["created_at"]),
+    )
+
+
+def _cleanable_segments(revision: TranscriptRevision) -> tuple[CleanableSegment, ...]:
+    return tuple(
+        CleanableSegment(
+            source_segment_id=segment.source_segment_id,
+            text=segment.text,
+        )
+        for segment in revision.segments
+    )
+
+
+def _transient_clean_draft_failure(
+    *,
+    owner_id: str,
+    job_id: str,
+    source_revision: TranscriptRevision,
+    revision: TranscriptRevision,
+) -> CleanDraftResult:
+    """Не перезаписывает пользовательскую ревизию, успевшую появиться при очистке."""
+
+    return CleanDraftResult(
+        info=CleanDraftInfo(
+            job_id=job_id,
+            owner_id=owner_id,
+            source_revision_id=source_revision.info.id,
+            clean_revision_id=None,
+            status=CleanDraftStatus.FAILED,
+            reason="Рабочая ревизия изменилась во время подготовки черновика",
+            created_at=_utc_now(),
+        ),
+        revision=revision,
     )
 
 

@@ -27,6 +27,9 @@ class LastActiveAdminError(RuntimeError):
     """Изменение оставит сервис без действующего администратора."""
 
 
+TRANSCRIPT_VIEW_PREFERENCES = frozenset({"clean", "raw", "last_selected"})
+
+
 class Database:
     """Минимальный слой SQLite без хранения секретов в открытом виде."""
 
@@ -62,6 +65,8 @@ class Database:
                     password_hash TEXT NOT NULL,
                     role TEXT NOT NULL CHECK (role IN ('user', 'admin')),
                     is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+                    transcript_view_preference TEXT NOT NULL DEFAULT 'clean'
+                        CHECK (transcript_view_preference IN ('clean', 'raw', 'last_selected')),
                     created_at TEXT NOT NULL
                 );
 
@@ -86,6 +91,21 @@ class Database:
                     created_at TEXT NOT NULL
                 );
                 """
+            )
+            self._migrate_transcript_view_preference(connection)
+
+    @staticmethod
+    def _migrate_transcript_view_preference(connection: sqlite3.Connection) -> None:
+        """Добавляет настройку существующим изолированным базам без потери данных."""
+
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(users)").fetchall()
+        }
+        if "transcript_view_preference" not in columns:
+            connection.execute(
+                "ALTER TABLE users ADD COLUMN transcript_view_preference "
+                "TEXT NOT NULL DEFAULT 'clean'"
             )
 
     def ping(self) -> bool:
@@ -118,6 +138,32 @@ class Database:
         with self.connection() as connection:
             row = connection.execute("SELECT * FROM users WHERE login = ?", (login,)).fetchone()
         return dict(row) if row else None
+
+    def get_transcript_view_preference(self, user_id: str) -> str:
+        """Возвращает личный режим показа редактора с безопасным значением по умолчанию."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT transcript_view_preference FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError("Пользователь не найден")
+        preference = str(row["transcript_view_preference"] or "clean")
+        return preference if preference in TRANSCRIPT_VIEW_PREFERENCES else "clean"
+
+    def set_transcript_view_preference(self, *, user_id: str, preference: str) -> str:
+        """Сохраняет только личный режим просмотра без затрагивания транскрипций."""
+
+        if preference not in TRANSCRIPT_VIEW_PREFERENCES:
+            raise ValueError("Неизвестный режим просмотра транскрипции")
+        with self.connection() as connection:
+            updated = connection.execute(
+                "UPDATE users SET transcript_view_preference = ? WHERE id = ?",
+                (preference, user_id),
+            ).rowcount
+        if updated != 1:
+            raise KeyError("Пользователь не найден")
+        return preference
 
     def list_users(self) -> list[dict[str, Any]]:
         with self.connection() as connection:

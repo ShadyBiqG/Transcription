@@ -1,6 +1,9 @@
 """Редакторские ревизии без мутаций исходного ASR и диаризации."""
 
 from .models import (
+    CleanDraftInfo,
+    CleanDraftResult,
+    CleanDraftStatus,
     GroupMergeOperation,
     GroupSnapshot,
     GroupUpdate,
@@ -9,6 +12,7 @@ from .models import (
     SourceSegmentSnapshot,
     TranscriptRevision,
     TranscriptRevisionInfo,
+    display_speaker_label,
 )
 from .publisher import AsrBaselinePublisher
 from .repository import (
@@ -22,6 +26,9 @@ from .repository import (
 __all__ = [
     "BaselineAlreadyExistsError",
     "AsrBaselinePublisher",
+    "CleanDraftInfo",
+    "CleanDraftResult",
+    "CleanDraftStatus",
     "EditorRepository",
     "EditorRepositoryError",
     "GroupMergeOperation",
@@ -34,4 +41,5 @@ __all__ = [
     "SourceSegmentSnapshot",
     "TranscriptRevision",
     "TranscriptRevisionInfo",
+    "display_speaker_label",
 ]

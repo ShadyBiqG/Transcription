@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
 
+from local_voice_transcriber.cleaning import CleanableSegment, CleanDraftCandidate
 from local_voice_transcriber.editor import (
     BaselineAlreadyExistsError,
     EditorRepository,
@@ -213,6 +215,91 @@ def test_rejects_unknown_snapshot_references_and_actor_other_than_owner(tmp_path
         )
 
 
+def test_clean_draft_is_a_new_revision_and_preserves_immutable_baseline(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    baseline = _cleanable_baseline(repository)
+
+    result = repository.create_clean_draft(
+        owner_id="owner-a",
+        job_id="clean-job",
+        cleaner=FakeCleaner({"clean-segment": "Речь"}),
+    )
+
+    assert result.info.status.value == "applied"
+    assert result.revision.info.number == 2
+    assert result.revision.info.origin.value == "automatic"
+    assert result.revision.segments[0].text == "Речь"
+    raw = repository.get_baseline_revision(owner_id="owner-a", job_id="clean-job")
+    assert raw.info.id == baseline.info.id
+    assert raw.segments[0].text == "Эм, Речь"
+
+
+def test_clean_draft_falls_back_to_baseline_when_candidate_is_not_deletion_only(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    baseline = _baseline(repository)
+
+    result = repository.create_clean_draft(
+        owner_id="owner-a",
+        job_id="job-a",
+        cleaner=FakeCleaner({"source-1": "Новый текст"}),
+    )
+
+    assert result.info.status.value == "failed"
+    assert result.revision.info.id == baseline.info.id
+    current = repository.get_current_revision(owner_id="owner-a", job_id="job-a")
+    assert current.info.id == baseline.info.id
+
+
+def test_cleaner_does_not_hold_immediate_transaction_while_it_runs(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    _cleanable_baseline(repository)
+
+    result = repository.create_clean_draft(
+        owner_id="owner-a",
+        job_id="clean-job",
+        cleaner=TransactionProbeCleaner(tmp_path / "next.sqlite3"),
+    )
+
+    assert result.info.status.value == "applied"
+    assert result.revision.info.number == 2
+
+
+def test_segment_speaker_change_only_accepts_an_unmerged_local_group(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    baseline = _baseline(repository)
+    merged = repository.merge_groups(
+        owner_id="owner-a",
+        job_id="job-a",
+        source_group_id="group-b",
+        target_group_id="group-a",
+        expected_current_revision=baseline.info.number,
+    )
+
+    with pytest.raises(InvalidGroupOperationError):
+        repository.assign_segment_speaker(
+            owner_id="owner-a",
+            job_id="job-a",
+            source_segment_id="source-1",
+            speaker_group_id="group-b",
+            expected_current_revision=merged.info.number,
+        )
+
+    changed = repository.assign_segment_speaker(
+        owner_id="owner-a",
+        job_id="job-a",
+        source_segment_id="source-2",
+        speaker_group_id="group-a",
+        expected_current_revision=merged.info.number,
+    )
+    assert changed.info.number == 3
+    assert changed.segments[1].primary_group_id == "group-a"
+    assert repository.get_baseline_revision(owner_id="owner-a", job_id="job-a").segments[
+        1
+    ].primary_group_id == "group-b"
+
+
 def _repository(tmp_path: Path) -> EditorRepository:
     repository = EditorRepository(tmp_path / "next.sqlite3")
     repository.migrate()
@@ -246,8 +333,52 @@ def _baseline(repository: EditorRepository):
     )
 
 
+def _cleanable_baseline(repository: EditorRepository):
+    return repository.create_baseline(
+        owner_id="owner-a",
+        job_id="clean-job",
+        job_run_id="clean-run",
+        groups=_groups(),
+        source_segments=[
+            SourceSegmentSnapshot(
+                source_segment_id="clean-segment",
+                ordinal=0,
+                text="Эм, Речь",
+                primary_group_id="group-a",
+                speaker_group_ids=("group-a",),
+            )
+        ],
+        created_by="owner-a",
+    )
+
+
 def _groups() -> list[GroupSnapshot]:
     return [
         GroupSnapshot("group-a", "SPEAKER_00"),
         GroupSnapshot("group-b", "SPEAKER_01"),
     ]
+
+
+class FakeCleaner:
+    def __init__(self, changes: dict[str, str]) -> None:
+        self._changes = changes
+
+    def clean(self, segments: tuple[CleanableSegment, ...]) -> CleanDraftCandidate:
+        del segments
+        return CleanDraftCandidate(self._changes)
+
+
+class TransactionProbeCleaner:
+    """Проверяет, что во время внешней очистки SQLite не удерживает write-lock."""
+
+    def __init__(self, database_path: Path) -> None:
+        self._database_path = database_path
+
+    def clean(self, segments: tuple[CleanableSegment, ...]) -> CleanDraftCandidate:
+        connection = sqlite3.connect(self._database_path, timeout=0.05)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+        finally:
+            connection.rollback()
+            connection.close()
+        return CleanDraftCandidate({"clean-segment": "Речь"})

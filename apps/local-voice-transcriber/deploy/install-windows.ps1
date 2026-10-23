@@ -281,7 +281,7 @@ $modelInstaller = Join-Path $PSScriptRoot "install-default-model-packs.ps1"
 if (-not (Test-Path -LiteralPath $modelInstaller -PathType Leaf)) {
     throw "The default model installer was not found: $modelInstaller"
 }
-Write-Host "Installing verified local ASR, VAD, voice, and FFmpeg packs..."
+Write-Host "Installing verified local ASR, VAD, voice, cleaner, and FFmpeg packs..."
 $previousProjectEnvironment = $env:UV_PROJECT_ENVIRONMENT
 try {
     $env:UV_PROJECT_ENVIRONMENT = $virtualEnvironmentPath
@@ -312,6 +312,10 @@ if (-not (Test-Path -LiteralPath $environmentFile)) {
         NEXT_MODELS_DIR = $modelInstallation.ModelsRoot
         NEXT_ASR_MANIFEST = $modelInstallation.ManifestPath
         NEXT_FFMPEG_PATH = $modelInstallation.FfmpegPath
+        NEXT_CLEANER_MODEL_PATH = $modelInstallation.CleanerModelPath
+        NEXT_CLEANER_LLAMA_SERVER_PATH = $modelInstallation.CleanerLlamaServerPath
+        NEXT_CLEANER_ENDPOINT = "http://127.0.0.1:8020"
+        NEXT_CLEANER_ENABLED = "false"
         NEXT_HOST = "127.0.0.1"
         NEXT_PORT = "$Port"
         NEXT_INSTANCE_ID = "transcription-next-candidate"
@@ -327,6 +331,12 @@ else {
     Ensure-EnvironmentValue $environmentFile "NEXT_MODELS_DIR" $modelInstallation.ModelsRoot
     Ensure-EnvironmentValue $environmentFile "NEXT_ASR_MANIFEST" $modelInstallation.ManifestPath
     Ensure-EnvironmentValue $environmentFile "NEXT_FFMPEG_PATH" $modelInstallation.FfmpegPath
+    Ensure-EnvironmentValue $environmentFile "NEXT_CLEANER_MODEL_PATH" $modelInstallation.CleanerModelPath
+    Ensure-EnvironmentValue $environmentFile "NEXT_CLEANER_LLAMA_SERVER_PATH" $modelInstallation.CleanerLlamaServerPath
+    # Служба очистителя переустанавливается после этого скрипта. До её
+    # loopback health-проверки приложение использует безопасный rule-based fallback.
+    Ensure-EnvironmentValue $environmentFile "NEXT_CLEANER_ENDPOINT" "http://127.0.0.1:8020"
+    Ensure-EnvironmentValue $environmentFile "NEXT_CLEANER_ENABLED" "false"
 }
 
 . $environmentFile

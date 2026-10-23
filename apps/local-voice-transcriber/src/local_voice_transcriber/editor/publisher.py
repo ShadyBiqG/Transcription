@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from ..cleaning import RuleBasedDeletionCleaner, TranscriptCleaner
 from ..diarization import AsrSegmentReference, DiarizationInterval, DiarizationMapper
 from ..jobs.models import Job, JobRun
 from ..jobs.repository import JobRepository
@@ -22,10 +23,12 @@ class AsrBaselinePublisher:
         editor: EditorRepository,
         *,
         active_profile_label: Callable[[str], str | None] | None = None,
+        cleaner: TranscriptCleaner | None = None,
     ) -> None:
         self._jobs = jobs
         self._editor = editor
         self._active_profile_label = active_profile_label
+        self._cleaner = cleaner or RuleBasedDeletionCleaner()
 
     def publish(
         self,
@@ -75,18 +78,23 @@ class AsrBaselinePublisher:
         groups = tuple(
             self._group_snapshot(
                 group_id=group_id,
-                generic_label=f"Говорящий {index}",
+                generic_label=f"Спикер {index}",
                 match=matches_by_group.get(group_id),
             )
             for index, group_id in enumerate(group_order, start=1)
         )
-        return self._editor.create_baseline(
+        self._editor.create_baseline(
             owner_id=job.owner_id,
             job_id=job.id,
             job_run_id=run.id,
             groups=groups,
             source_segments=source_segments,
         )
+        return self._editor.create_clean_draft(
+            owner_id=job.owner_id,
+            job_id=job.id,
+            cleaner=self._cleaner,
+        ).revision
 
     def _group_snapshot(
         self,

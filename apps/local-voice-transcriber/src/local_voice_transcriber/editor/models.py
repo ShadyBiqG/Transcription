@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -17,6 +18,14 @@ class RevisionOrigin(StrEnum):
     AUTOMATIC = "automatic"
     MANUAL = "manual"
     RESTORE = "restore"
+
+
+class CleanDraftStatus(StrEnum):
+    """Результат локальной подготовки чистого черновика."""
+
+    APPLIED = "applied"
+    UNCHANGED = "unchanged"
+    FAILED = "failed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +172,27 @@ class TranscriptRevision:
 
 
 @dataclass(frozen=True, slots=True)
+class CleanDraftInfo:
+    """Статус чистого представления без раскрытия диагностик очистителя."""
+
+    job_id: str
+    owner_id: str
+    source_revision_id: str
+    clean_revision_id: str | None
+    status: CleanDraftStatus
+    reason: str | None
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class CleanDraftResult:
+    """Результат автоматической очистки вместе с актуальной ревизией."""
+
+    info: CleanDraftInfo
+    revision: TranscriptRevision
+
+
+@dataclass(frozen=True, slots=True)
 class GroupMergeOperation:
     """Append-only запись объединения либо его обратной операции."""
 
@@ -188,3 +218,10 @@ def _ensure_unique(values: tuple[str, ...], field_name: str) -> None:
         raise ValueError(f"{field_name} не могут быть пустыми")
     if len(set(values)) != len(values):
         raise ValueError(f"{field_name} должны быть уникальны")
+
+
+def display_speaker_label(label: str) -> str:
+    """Показывает старые generic-метки в принятой форме «Спикер N»."""
+
+    match = re.fullmatch(r"\s*говорящий\s+(\d+)\s*", label, flags=re.IGNORECASE)
+    return f"Спикер {match.group(1)}" if match else label

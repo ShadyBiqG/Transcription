@@ -16,6 +16,10 @@ def test_default_configuration_uses_app_local_data_root(tmp_path: Path) -> None:
     assert settings.models_dir == tmp_path / "data" / "models"
     assert settings.asr_manifest_path is None
     assert settings.ffmpeg_path is None
+    assert settings.cleaner_enabled is False
+    assert settings.cleaner_model_path is None
+    assert settings.cleaner_llama_server_path is None
+    assert settings.cleaner_endpoint is None
     assert settings.port == 8010
     assert settings.cookie_name == "local_voice_transcriber_session"
 
@@ -84,5 +88,30 @@ def test_voice_auto_threshold_cannot_be_weaker_than_candidate(tmp_path: Path) ->
                 "NEXT_VOICE_CANDIDATE_MAX_DISTANCE": "0.2",
                 "NEXT_VOICE_AUTO_MAX_DISTANCE": "0.3",
             },
+            app_root=tmp_path,
+        )
+
+
+def test_cleaner_configuration_accepts_only_local_endpoint_and_model_pack(tmp_path: Path) -> None:
+    settings = Settings.from_env(
+        {
+            "NEXT_CLEANER_ENABLED": "true",
+            "NEXT_CLEANER_MODEL_PATH": "qwen/cleaner.gguf",
+            "NEXT_CLEANER_LLAMA_SERVER_PATH": "tools/llama-server.exe",
+            "NEXT_CLEANER_ENDPOINT": "http://127.0.0.1:18080",
+        },
+        app_root=tmp_path,
+    )
+
+    assert settings.cleaner_enabled is True
+    assert settings.cleaner_model_path == tmp_path / "data" / "models" / "qwen" / "cleaner.gguf"
+    assert settings.cleaner_llama_server_path == tmp_path / "tools" / "llama-server.exe"
+    assert settings.cleaner_endpoint == "http://127.0.0.1:18080"
+
+
+def test_cleaner_configuration_rejects_nonlocal_endpoint(tmp_path: Path) -> None:
+    with pytest.raises(ConfigurationError, match="NEXT_CLEANER_ENDPOINT"):
+        Settings.from_env(
+            {"NEXT_CLEANER_ENDPOINT": "https://example.test/v1"},
             app_root=tmp_path,
         )

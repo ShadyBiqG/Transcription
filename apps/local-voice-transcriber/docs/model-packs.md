@@ -4,8 +4,12 @@
 Обычный Windows-установщик один раз доставляет проверенный набор в
 `NEXT_DATA_DIR/models`, сверяет каждый файл по SHA-256 и создаёт manifest
 `asr-pack.json`. Он также запускает локальную проверку загрузки ASR, VAD,
-диаризации, голосового extractor и FFmpeg. Неверная контрольная сумма или
-несовместимый runtime останавливают установку до создания учётной записи.
+диаризации, голосового extractor и FFmpeg. Для чистого черновика он отдельно
+доставляет закреплённые GGUF-веса Qwen и `llama-server.exe`. Затем установщик
+службы запускает проверенный локальный LLM только на loopback и включает его
+для приложения лишь после health-проверки. Неверная контрольная сумма или
+несовместимый runtime останавливают доставку пакетов до создания учётной
+записи.
 
 Для ONNX Runtime на Windows требуется Microsoft Visual C++ 2019 Runtime или
 новее. Установщик сначала проверяет импорт, а при отсутствии runtime получает
@@ -14,8 +18,8 @@
 прав, его нужно подтвердить.
 
 Для сервера из примера это будут `E:\TranscriptionData\models` и
-`E:\TranscriptionData\tools`. Первая загрузка составляет приблизительно 1 ГБ;
-на диске data root требуется не менее 5 ГБ свободного места для временного
+`E:\TranscriptionData\tools`. Первая загрузка составляет приблизительно 2.2 ГБ;
+на диске data root требуется не менее 7 ГБ свободного места для временного
 каталога и распаковки.
 
 ## Состав стандартного пакета
@@ -43,6 +47,20 @@
   поставки дополнительно защищён известной SHA-256 архива: при изменении
   «latest»-артефакта установка остановится, пока пакет не будет обновлён в
   коде приложения.
+- Локальный очиститель: Qwen2.5-1.5B-Instruct-GGUF в квантизации `Q4_K_M`
+  из официального [Qwen/Qwen2.5-1.5B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF),
+  revision `91cad51170dc346986eccefdc2dd33a9da36ead9`. Установщик принимает
+  только `qwen2.5-1.5b-instruct-q4_k_m.gguf` размером 1 117 320 736 байт и
+  SHA-256 `6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e`.
+  Лицензия модели — Apache-2.0.
+- Локальный runtime очистителя: CPU-сборка без AVX
+  `llama-b5092-bin-win-noavx-x64.zip` из официального release
+  [ggml-org/llama.cpp b5092](https://github.com/ggml-org/llama.cpp/releases/tag/b5092).
+  Архив принимается только с SHA-256
+  `4a4c6aef72ff13122d56a9ab59acf697603ce9084087427400ae7d1b7ebaef71`;
+  до публикации распаковывается во временный каталог, проверяется безопасная
+  структура путей и запуск `llama-server.exe --version`. Код llama.cpp
+  распространяется по MIT.
 
 Версии `onnx-asr[cpu]==0.12.0`, `sherpa-onnx==1.13.7` и строго совпадающего
 `sherpa-onnx-core==1.13.7` закреплены в `pyproject.toml`. Отдельный core
@@ -67,7 +85,22 @@ Manifest находится внутри `NEXT_MODELS_DIR` и содержит �
 $env:NEXT_MODELS_DIR = "E:\TranscriptionData\models"
 $env:NEXT_ASR_MANIFEST = "E:\TranscriptionData\models\asr-pack.json"
 $env:NEXT_FFMPEG_PATH = "E:\TranscriptionData\tools\ffmpeg-n8.1-20261021\bin\ffmpeg.exe"
+$env:NEXT_CLEANER_MODEL_PATH = "E:\TranscriptionData\models\cleaner\qwen2.5-1.5b-instruct-q4-k-m-91cad511\qwen2.5-1.5b-instruct-q4_k_m.gguf"
+$env:NEXT_CLEANER_LLAMA_SERVER_PATH = "E:\TranscriptionData\tools\llama.cpp-b5092-win-noavx-x64\llama-server.exe"
+$env:NEXT_CLEANER_ENDPOINT = "http://127.0.0.1:8020"
+$env:NEXT_CLEANER_ENABLED = "true" # только после health-проверки cleaner-службы
 ```
+
+`TranscriptionNextCleanerService` запускает `llama-server.exe` от
+`LocalService` с `--host 127.0.0.1 --port 8020 --ctx-size 4096 --parallel 1`.
+Установщик сначала записывает `NEXT_CLEANER_ENABLED=false`, ждёт
+`http://127.0.0.1:8020/health` и только затем меняет значение на `true`.
+Если загрузка модели, служба или health-проверка не удались, значение остаётся
+`false`, а основная `TranscriptionNextCandidateService` продолжает работу с
+rule-based очисткой. При недоступном локальном LLM приложение должно сохранить
+исходную транскрипцию и показать её вместо изменённого текста. GGUF-веса и
+llama.cpp не входят в `asr-pack.json`, потому что это отдельный runtime
+очистки, а не ONNX ASR-пакет.
 
 Для одного `DataPath` разрешён ровно один процесс приложения. Каталог ZeusDB
 расположен внутри `NEXT_DATA_DIR`, хранит общий голосовой индекс и должен быть

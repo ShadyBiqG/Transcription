@@ -312,3 +312,67 @@ def test_transcript_export_is_current_and_owner_scoped(client: TestClient) -> No
         denied = other.get(f"/api/v1/jobs/{job_id}/transcript/export?format=txt")
 
     assert denied.status_code == 404
+
+
+def test_editor_projects_legacy_generic_labels_as_speakers(client: TestClient) -> None:
+    register(client, "owner-user")
+    login(client, "owner-user")
+    owner = client.get("/api/v1/auth/me").json()["user"]["id"]
+    job_id = _create_job(client)
+    _publish_baseline(client, job_id=job_id, owner_id=owner)
+
+    transcript = client.get(f"/api/v1/jobs/{job_id}/transcript")
+
+    assert transcript.status_code == 200, transcript.text
+    assert [group["label"] for group in transcript.json()["groups"]] == [
+        "Спикер 1",
+        "Спикер 2",
+    ]
+    assert "Спикер 1: Исходный текст" in client.get(
+        f"/api/v1/jobs/{job_id}/transcript/export"
+    ).text
+
+
+def test_owner_can_choose_raw_clean_or_last_selected_view(client: TestClient) -> None:
+    register(client, "owner-user")
+    login(client, "owner-user")
+    owner = client.get("/api/v1/auth/me").json()["user"]["id"]
+    job_id = _create_job(client)
+    _publish_baseline(client, job_id=job_id, owner_id=owner)
+
+    initial = client.get(f"/api/v1/jobs/{job_id}/transcript/view-preference")
+    assert initial.json() == {"preference": "clean", "selected_view": "clean"}
+
+    updated = client.patch(
+        f"/api/v1/jobs/{job_id}/transcript/view-preference",
+        headers=_headers(client),
+        json={"preference": "last_selected", "selected_view": "raw"},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json() == {"preference": "last_selected", "selected_view": "raw"}
+
+    transcript = client.get(f"/api/v1/jobs/{job_id}/transcript")
+    assert transcript.status_code == 200, transcript.text
+    assert transcript.json()["view"]["resolved"] == "raw"
+    assert transcript.json()["view"]["preference"] == "last_selected"
+
+
+def test_segment_speaker_assignment_is_a_new_local_revision(client: TestClient) -> None:
+    register(client, "owner-user")
+    login(client, "owner-user")
+    owner = client.get("/api/v1/auth/me").json()["user"]["id"]
+    job_id = _create_job(client)
+    _publish_baseline(client, job_id=job_id, owner_id=owner)
+
+    changed = client.put(
+        f"/api/v1/jobs/{job_id}/transcript/segments/segment-1/speaker",
+        headers=_headers(client),
+        json={"speaker_group_id": "group-b", "expected_revision_number": 1},
+    )
+
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["revision"]["number"] == 2
+    assert changed.json()["segments"][0]["primary_group_id"] == "group-b"
+    raw = client.get(f"/api/v1/jobs/{job_id}/transcript?view=raw")
+    assert raw.status_code == 200, raw.text
+    assert raw.json()["segments"][0]["primary_group_id"] == "group-a"

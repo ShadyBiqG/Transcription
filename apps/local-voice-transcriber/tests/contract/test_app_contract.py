@@ -205,6 +205,13 @@ def test_static_index_is_public_without_api_secrets(client: TestClient) -> None:
     assert 'id="download-text-button"' in response.text
     assert 'id="open-speakers-button"' in response.text
     assert 'id="speakers-dialog"' in response.text
+    assert 'id="speaker-timeline-dialog"' in response.text
+    assert 'id="clean-draft-button"' in response.text
+    assert 'id="raw-draft-button"' in response.text
+    assert 'Изменить спикеров' in response.text
+    assert 'Чистый черновик' in response.text
+    assert 'Дословный оригинал' in response.text
+    assert 'Говорящие · 0' not in response.text
 
     script = client.get("/static/app.js")
 
@@ -220,7 +227,7 @@ def test_static_index_is_public_without_api_secrets(client: TestClient) -> None:
     assert '"/transcript/groups/merge"' in script.text
     assert '"/transcript/groups/unmerge"' in script.text
     assert '"/voice-profiles"' not in script.text
-    assert "Объединить локальные группы этой записи" in script.text
+    assert "Объединить локальные группы" in script.text
     assert "Сопоставить с другой группой" not in script.text
     assert "speaker-picker" not in script.text
     assert "function playSample" in script.text
@@ -229,5 +236,18 @@ def test_static_index_is_public_without_api_secrets(client: TestClient) -> None:
     assert "function isGenericGroupLabel" in script.text
     assert 'isGenericGroupLabel(group.label) ? "" : group.label' in script.text
     assert "function renderSpeakerPanel" in script.text
+    assert "function renderSpeakerTimeline" in script.text
+    assert "function openSpeakerTimeline" in script.text
+    assert "function setDraftMode" in script.text
+    assert "function syncDraftModeControls" in script.text
+    assert '"/transcript/view-preference"' in script.text
+    assert '"/transcript?view="' in script.text
+    assert 'preference: "last_selected"' in script.text
+    assert "editor.revision.cleaning" not in script.text
+    assert "hiddenByCleaning" in script.text
+    assert '"Дословный оригинал ASR сохранён неизменным' in script.text
+    assert "Добавить образец голоса" in script.text
+    assert "function enrollSpeakerSample" in script.text
     assert 'transcript/export?format=txt' in script.text
-    assert 'group.assignment_status === "confirmed"' in script.text
+    assert "Выбирайте только из групп этой записи" in script.text
+    assert '"Говорящие · "' not in script.text
