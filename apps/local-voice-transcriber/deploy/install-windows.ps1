@@ -142,12 +142,12 @@ mismatches = [
     or (source_root / name).read_bytes() != (installed_root / name).read_bytes()
 ]
 if mismatches:
-    raise SystemExit("Файлы интерфейса отличаются: " + ", ".join(mismatches))
-print("Файлы интерфейса проверены.")
+    raise SystemExit("Installed interface files differ: " + ", ".join(mismatches))
+print("Installed interface files verified.")
 '@
     $detail = & $PythonPath -I -X utf8 -c $verificationProgram $ApplicationRoot 2>&1
     if ($LASTEXITCODE -ne 0) {
-        throw "Установленные файлы интерфейса не совпадают с обновлёнными исходниками. $($detail | Out-String)"
+        throw "Installed interface files do not match the updated source files. $($detail | Out-String)"
     }
     Write-Host (($detail | Out-String).Trim())
 }
